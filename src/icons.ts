@@ -1,13 +1,15 @@
 const BASE = 'https://miquelferrerllompart.github.io/trello-link-holded-power-up/icons';
 
-// Contact icon (address-book)
-// light = dark fill for light backgrounds, dark = white fill for dark backgrounds
+// Plain SVGs (no fill) — Trello colorizes them automatically
+// Used by card-buttons (only accepts string URL)
+export const CONTACT_ICON_URL = `${BASE}/contact.svg`;
+export const PROJECT_ICON_URL = `${BASE}/project.svg`;
+
+// { dark, light } format — used by board-buttons and card-badges
 export const CONTACT_ICON = {
   dark: `${BASE}/contact-dark.svg`,
   light: `${BASE}/contact-light.svg`,
 };
-
-// Project icon (diagram-subtask)
 export const PROJECT_ICON = {
   dark: `${BASE}/project-dark.svg`,
   light: `${BASE}/project-light.svg`,

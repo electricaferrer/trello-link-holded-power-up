@@ -1,10 +1,10 @@
 import type { TrelloContext } from '../types';
-import { CONTACT_ICON, PROJECT_ICON } from '../icons';
+import { CONTACT_ICON_URL, PROJECT_ICON_URL } from '../icons';
 
 export function getCardButtons(t: unknown) {
   return [
     {
-      icon: CONTACT_ICON,
+      icon: CONTACT_ICON_URL,
       text: 'Vincular cliente',
       callback: (ctx: TrelloContext) => {
         ctx.popup({
@@ -15,7 +15,7 @@ export function getCardButtons(t: unknown) {
       },
     },
     {
-      icon: PROJECT_ICON,
+      icon: PROJECT_ICON_URL,
       text: 'Vincular proyecto',
       callback: (ctx: TrelloContext) => {
         ctx.popup({
