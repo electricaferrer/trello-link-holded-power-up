@@ -1,5 +1,5 @@
 import { getProjects } from '../holded-api';
-import { getApiKey, getCardData, setCardData } from '../storage';
+import { getCardData, setCardData } from '../storage';
 import type { HoldedProject, TrelloContext } from '../types';
 
 const t = window.TrelloPowerUp.iframe() as unknown as TrelloContext;
@@ -11,13 +11,8 @@ let allProjects: HoldedProject[] | null = null;
 
 async function loadProjects(): Promise<HoldedProject[]> {
   if (allProjects) return allProjects;
-  const apiKey = await getApiKey(t);
-  if (!apiKey) {
-    resultsDiv.innerHTML = '<div class="error">API Key no configurada. Usa el botón "Configurar Holded" en el tablero.</div>';
-    return [];
-  }
   resultsDiv.innerHTML = '<div class="loading">Cargando proyectos...</div>';
-  allProjects = await getProjects(apiKey);
+  allProjects = await getProjects();
   return allProjects;
 }
 

@@ -2,18 +2,19 @@ import type { HoldedContact, HoldedProject } from './types';
 
 const PROXY_BASE = 'https://holded-proxy.mferrer.workers.dev';
 
-async function fetchHolded<T>(apiKey: string, url: string): Promise<T> {
-  const response = await fetch(url, {
-    headers: { 'X-Holded-Key': apiKey },
-  });
+async function fetchHolded<T>(url: string): Promise<T> {
+  const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Holded API error: ${response.status} ${response.statusText}`);
+    const body = await response.text();
+    let msg = `Holded API error: ${response.status}`;
+    try { msg = JSON.parse(body).error || msg; } catch {}
+    throw new Error(msg);
   }
   return response.json();
 }
 
-export async function searchContacts(apiKey: string, query: string): Promise<HoldedContact[]> {
-  const contacts = await fetchHolded<HoldedContact[]>(apiKey, `${PROXY_BASE}/api/invoicing/v1/contacts`);
+export async function searchContacts(query: string): Promise<HoldedContact[]> {
+  const contacts = await fetchHolded<HoldedContact[]>(`${PROXY_BASE}/api/invoicing/v1/contacts`);
   if (!query) return contacts;
   const q = query.toLowerCase();
   return contacts.filter(
@@ -26,6 +27,6 @@ export async function searchContacts(apiKey: string, query: string): Promise<Hol
   );
 }
 
-export async function getProjects(apiKey: string): Promise<HoldedProject[]> {
-  return fetchHolded<HoldedProject[]>(apiKey, `${PROXY_BASE}/api/projects/v1/projects`);
+export async function getProjects(): Promise<HoldedProject[]> {
+  return fetchHolded<HoldedProject[]>(`${PROXY_BASE}/api/projects/v1/projects`);
 }

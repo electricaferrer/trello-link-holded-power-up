@@ -1,5 +1,4 @@
 import { searchContacts } from '../holded-api';
-import { getApiKey } from '../storage';
 import { getCardData, setCardData } from '../storage';
 import type { HoldedContact, TrelloContext } from '../types';
 
@@ -12,13 +11,8 @@ let allContacts: HoldedContact[] | null = null;
 
 async function loadContacts(): Promise<HoldedContact[]> {
   if (allContacts) return allContacts;
-  const apiKey = await getApiKey(t);
-  if (!apiKey) {
-    resultsDiv.innerHTML = '<div class="error">API Key no configurada. Usa el botón "Configurar Holded" en el tablero.</div>';
-    return [];
-  }
   resultsDiv.innerHTML = '<div class="loading">Cargando clientes...</div>';
-  allContacts = await searchContacts(apiKey, '');
+  allContacts = await searchContacts('');
   return allContacts;
 }
 
