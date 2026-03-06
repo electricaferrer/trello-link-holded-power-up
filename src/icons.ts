@@ -16,3 +16,6 @@ const PROJECT_DARK =
 
 export const CONTACT_ICON = { dark: CONTACT_DARK, light: CONTACT_LIGHT };
 export const PROJECT_ICON = { dark: PROJECT_DARK, light: PROJECT_LIGHT };
+
+// Plain string icon for capabilities that don't support { dark, light } (e.g. card-back-section)
+export const CONTACT_ICON_URL = CONTACT_LIGHT;
