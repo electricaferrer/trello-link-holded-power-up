@@ -3,8 +3,7 @@ import { getCardButtons } from './capabilities/card-buttons';
 import { getCardBackSection } from './capabilities/card-back-section';
 import { getBoardButtons } from './capabilities/board-buttons';
 
-const ICON_URL =
-  'https://cdn-icons-png.flaticon.com/512/1995/1995515.png';
+const ICON_URL = 'https://miquelferrerllompart.github.io/trello-link-holded-power-up/icon.svg';
 
 window.TrelloPowerUp.initialize({
   'card-buttons': (t: unknown) => getCardButtons(t, ICON_URL),
