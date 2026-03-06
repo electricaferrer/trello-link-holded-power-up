@@ -28,8 +28,8 @@
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      padding: 2px 8px;
-      border-radius: 3px;
+      padding: 4px 8px;
+      border-radius: 8px;
       font-size: 14px;
       font-weight: 500;
       text-decoration: none;
@@ -160,6 +160,8 @@
               e.preventDefault();
               e.stopPropagation();
               var field = this.getAttribute('data-field');
+              var label = field === 'contact' ? 'cliente' : 'proyecto';
+              if (!confirm('¿Desvincular ' + label + '?')) return;
               t.get('card', 'shared', 'holdedData').then(function(current) {
                 current = current || {};
                 if (field === 'contact') {
