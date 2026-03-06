@@ -4,7 +4,7 @@ import { addTag } from '../description-tags';
 import { updateCardDescription } from '../trello-api';
 import type { HoldedProject, TrelloContext } from '../types';
 
-const t = window.TrelloPowerUp.iframe() as unknown as TrelloContext;
+const t = window.TrelloPowerUp.iframe({ appKey: '81d86f6c21c827e54947d36746561233', appName: 'Holded' }) as unknown as TrelloContext;
 const searchInput = document.getElementById('search') as HTMLInputElement;
 const resultsDiv = document.getElementById('results') as HTMLDivElement;
 
@@ -60,7 +60,7 @@ function renderResults(projects: HoldedProject[]) {
         const card = await t.card('id', 'desc');
         const newDesc = addTag(card.desc || '', 'project', name);
         await updateCardDescription(t, newDesc);
-      } catch { /* description sync is best-effort */ }
+      } catch (err) { console.error('Holded: error syncing description', err); }
       t.closePopup();
     });
   });
