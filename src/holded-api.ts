@@ -1,10 +1,11 @@
 import type { HoldedContact, HoldedProject } from './types';
 
-const BASE_URL = 'https://api.holded.com/api/invoicing/v1';
+// Cloudflare Worker proxy — update this after deploying the worker
+const PROXY_URL = 'https://holded-proxy.mferrer.workers.dev/api/invoicing/v1';
 
 async function fetchHolded<T>(apiKey: string, path: string): Promise<T> {
-  const response = await fetch(`${BASE_URL}${path}`, {
-    headers: { key: apiKey },
+  const response = await fetch(`${PROXY_URL}${path}`, {
+    headers: { 'X-Holded-Key': apiKey },
   });
   if (!response.ok) {
     throw new Error(`Holded API error: ${response.status} ${response.statusText}`);

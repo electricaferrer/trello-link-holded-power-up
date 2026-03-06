@@ -13,7 +13,9 @@
       "Bash(gh repo view miquelferrerllompart/trello-link-holded-power-up --json name,url --jq '.url')",
       "Bash(gh api repos/miquelferrerllompart/trello-link-holded-power-up/pages -X POST -f \"build_type=workflow\")",
       "Bash(git commit -m \"Add GitHub Pages deploy workflow and configure base path:*)",
-      "Bash(git push)"
+      "Bash(git push)",
+      "Bash(npx wrangler --version)",
+      "Bash(npx wrangler deploy)"
     ]
   }
 }
