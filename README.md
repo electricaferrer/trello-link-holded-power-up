@@ -27,12 +27,25 @@ Power-Up de Trello para vincular tarjetas con clientes y proyectos de [Holded](h
 
 ### Vincular cliente/proyecto
 
-Botones en cada tarjeta para buscar y vincular un cliente o proyecto de Holded. La búsqueda es flexible: divide las palabras del query y busca en nombre, email, CIF/NIF, nombre comercial.
+Botones en cada tarjeta para buscar y vincular un cliente o proyecto de Holded. La búsqueda es flexible: divide las palabras del query, ignora acentos y orden, y busca en nombre, email, CIF/NIF, nombre comercial.
+
+### Crear contacto
+
+Desde el popup de búsqueda de clientes se puede crear un nuevo contacto directamente, con formulario que incluye:
+- Nombre, DNI/CIF, tipo (persona/empresa), email, teléfono
+- Dirección completa de facturación (calle, ciudad, código postal, provincia, país)
+- Validación de campos obligatorios y formatos de email/teléfono
+- El contacto creado se vincula automáticamente a la tarjeta
+- Se añade una nota con el nombre del creador y el tablero de origen
+
+### Direcciones
+
+Al vincular un cliente, se puede seleccionar o crear una dirección de envío. La dirección seleccionada se muestra en el card-back junto al tag del cliente (primeros 8 caracteres + tooltip con la dirección completa).
 
 ### Card-back section
 
 Al abrir una tarjeta se muestra una sección "Holded" con tags de color:
-- **Azul** — cliente vinculado (click abre en Holded)
+- **Azul** — cliente vinculado (click abre en Holded), con etiqueta de dirección si existe
 - **Verde** — proyecto vinculado (click abre en Holded)
 - Hover muestra botón para desvincular (con confirmación)
 
@@ -85,6 +98,8 @@ trello-link-holded-power-up/
 │   ├── storage.ts                # Helpers para Trello card storage
 │   ├── types.ts                  # Interfaces TypeScript
 │   ├── icons.ts                  # URLs de iconos centralizadas
+│   ├── search-utils.ts            # Búsqueda flexible (acentos, orden de palabras)
+│   ├── search-utils.test.ts       # Tests de búsqueda
 │   ├── description-tags.ts       # Helpers para tags {{ contact/project: ... }} en descripción
 │   ├── trello-api.ts             # OAuth + PUT descripción vía Trello REST API
 │   ├── capabilities/
@@ -94,6 +109,10 @@ trello-link-holded-power-up/
 │   └── popups/
 │       ├── search-contact.html   # Popup búsqueda de clientes
 │       ├── search-contact.ts
+│       ├── create-contact.html   # Popup creación de contacto
+│       ├── create-contact.ts
+│       ├── select-address.html   # Popup selección de dirección
+│       ├── select-address.ts
 │       ├── search-project.html   # Popup búsqueda de proyectos
 │       └── search-project.ts
 ├── public/
@@ -165,6 +184,8 @@ El frontend queda en `https://trello-link-holded-power-up.pages.dev`.
 | Endpoint | Uso |
 |---|---|
 | `GET /api/invoicing/v1/contacts` | Listar contactos (clientes/proveedores) |
+| `POST /api/invoicing/v1/contacts` | Crear nuevo contacto |
+| `PUT /api/invoicing/v1/contacts/:id` | Actualizar contacto (ej. añadir dirección de envío) |
 | `GET /api/projects/v1/projects` | Listar proyectos |
 
 Todos los contactos/proyectos se cargan una vez y se filtran en el cliente.
@@ -177,6 +198,7 @@ interface CardHoldedData {
   contactName?: string;  // Nombre del contacto
   projectId?: string;    // ID del proyecto en Holded
   projectName?: string;  // Nombre del proyecto
+  addressLabel?: string; // Dirección seleccionada (resumen)
 }
 ```
 
@@ -187,7 +209,7 @@ Además, los tags `{{ contact: ... }}` y `{{ project: ... }}` se escriben en la 
 ## Seguridad
 
 - El API key de Holded se almacena como **secret** en Cloudflare Workers (nunca expuesto al frontend)
-- El Worker es un proxy de solo lectura (GET) — no puede modificar datos en Holded
+- El Worker permite GET (lectura), POST (crear contacto) y PUT (actualizar contacto)
 - CORS configurado con `Access-Control-Allow-Origin: *` (necesario para que Trello pueda llamar al worker)
 
 ## Licencia
