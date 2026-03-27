@@ -1,10 +1,8 @@
-import { fetchAllContacts } from '../holded-api';
+import { searchContacts, refreshContacts } from '../holded-api';
 import { getCardData, setCardData } from '../storage';
 import { addTag } from '../description-tags';
 import { updateCardDescription } from '../trello-api';
-import { fuzzyFilter } from '../search-utils';
 import { TRELLO_APP_KEY } from '../config';
-import { getCachedContacts, setCachedContacts, getCacheTimestamp } from '../contacts-cache';
 import type { HoldedContact, PendingContactSelection, TrelloContext } from '../types';
 
 const t = window.TrelloPowerUp.iframe({ appKey: TRELLO_APP_KEY, appName: 'Holded' }) as unknown as TrelloContext;
@@ -14,39 +12,14 @@ const reloadBtn = document.getElementById('reload-btn') as HTMLButtonElement;
 const tooltipEl = reloadBtn.querySelector('.tooltip') as HTMLSpanElement;
 
 let debounceTimer: ReturnType<typeof setTimeout>;
-let allContacts: HoldedContact[] | null = null;
-const RELOAD_COOLDOWN_MS = 5 * 60 * 1000;
+let totalContacts: number | null = null;
 
 function updateTooltip() {
-  if (allContacts) {
-    const ts = getCacheTimestamp();
-    const ago = ts ? formatTimeAgo(ts) : '';
-    tooltipEl.textContent = `${allContacts.length} contactos${ago ? ` (${ago})` : ''} — pulsa para recargar`;
+  if (totalContacts !== null) {
+    tooltipEl.textContent = `${totalContacts} contactos en caché — pulsa para recargar desde Holded`;
   } else {
     tooltipEl.textContent = 'Cargar lista de contactos desde Holded';
   }
-}
-
-function formatTimeAgo(ts: number): string {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return 'ahora mismo';
-  if (mins < 60) return `hace ${mins} min`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `hace ${hours}h`;
-  const days = Math.floor(hours / 24);
-  return `hace ${days}d`;
-}
-
-function stripNonDigits(v: string | null | undefined): string {
-  return v ? v.replace(/\D/g, '') : '';
-}
-
-function filterContacts(contacts: HoldedContact[], query: string): HoldedContact[] {
-  return fuzzyFilter(contacts, query, (c) =>
-    [c.name, c.email, c.code, c.tradeName, c.vatnumber, c.phone, c.mobile,
-     stripNonDigits(c.phone), stripNonDigits(c.mobile)].filter(Boolean).join(' ')
-  );
 }
 
 function addCreateButton() {
@@ -59,19 +32,8 @@ function addCreateButton() {
 
 function renderResults(contacts: HoldedContact[], query: string) {
   if (!query) {
-    if (!allContacts) {
-      resultsDiv.innerHTML =
-        '<div class="empty">Pulsa ↻ para cargar los contactos desde Holded</div>';
-    } else {
-      resultsDiv.innerHTML = '<div class="empty">Busca un contacto por nombre, email o NIF</div>';
-    }
+    resultsDiv.innerHTML = '<div class="empty">Busca un contacto por nombre, email o NIF</div>';
     addCreateButton();
-    return;
-  }
-
-  if (!allContacts) {
-    resultsDiv.innerHTML =
-      '<div class="empty">Primero carga los contactos pulsando ↻</div>';
     return;
   }
 
@@ -133,14 +95,22 @@ function renderResults(contacts: HoldedContact[], query: string) {
   });
 }
 
-function doSearch() {
+async function doSearch() {
   const query = searchInput.value.trim();
-  if (!allContacts) {
+  if (!query) {
     renderResults([], query);
     return;
   }
-  const filtered = query ? filterContacts(allContacts, query) : [];
-  renderResults(filtered, query);
+
+  resultsDiv.innerHTML = '<div class="loading">Buscando...</div>';
+  try {
+    const { total, results } = await searchContacts(query);
+    totalContacts = total;
+    updateTooltip();
+    renderResults(results, query);
+  } catch (err) {
+    resultsDiv.innerHTML = `<div class="error">Error: ${(err as Error).message}</div>`;
+  }
 }
 
 searchInput.addEventListener('input', () => {
@@ -148,53 +118,28 @@ searchInput.addEventListener('input', () => {
   debounceTimer = setTimeout(doSearch, 300);
 });
 
-function showCooldownWarning() {
-  const existing = document.getElementById('cooldown-warning');
-  if (existing) existing.remove();
-
-  const banner = document.createElement('div');
-  banner.id = 'cooldown-warning';
-  banner.className = 'cooldown-warning';
-  banner.innerHTML = `
-    <span>La lista se recargó hace poco. Solo es necesario recargar si no encuentras un contacto que debería existir.</span>
-    <div class="cooldown-actions">
-      <button class="cooldown-dismiss" id="cooldown-dismiss">Entendido</button>
-      <button class="cooldown-force" id="cooldown-force">Recargar igualmente</button>
-    </div>
-  `;
-  reloadBtn.parentElement!.after(banner);
-
-  document.getElementById('cooldown-dismiss')!.addEventListener('click', () => banner.remove());
-  document.getElementById('cooldown-force')!.addEventListener('click', async () => {
-    banner.remove();
-    await fetchFromServer();
-  });
-}
-
-async function fetchFromServer() {
+reloadBtn.addEventListener('click', async () => {
   reloadBtn.classList.add('spinning');
   try {
-    const contacts = await fetchAllContacts();
-    allContacts = contacts;
-    setCachedContacts(contacts);
+    const { total } = await refreshContacts();
+    totalContacts = total;
     updateTooltip();
-    doSearch();
+    // Re-run current search with fresh data
+    const query = searchInput.value.trim();
+    if (query) {
+      const { results } = await searchContacts(query);
+      renderResults(results, query);
+    }
   } catch (err) {
     resultsDiv.innerHTML = `<div class="error">Error: ${(err as Error).message}</div>`;
   }
   reloadBtn.classList.remove('spinning');
-}
-
-reloadBtn.addEventListener('click', async () => {
-  const lastReload = getCacheTimestamp();
-  if (lastReload && (Date.now() - lastReload) < RELOAD_COOLDOWN_MS) {
-    showCooldownWarning();
-    return;
-  }
-  await fetchFromServer();
 });
 
-// Load from cache on startup
-allContacts = getCachedContacts();
-updateTooltip();
-doSearch();
+// Warm up: trigger a no-query search so the worker loads contacts into KV if not cached
+searchContacts('').then(({ total }) => {
+  totalContacts = total;
+  updateTooltip();
+}).catch(() => {});
+
+renderResults([], '');

@@ -1,32 +1,33 @@
-import { getProjects } from '../holded-api';
+import { searchProjects, refreshProjects } from '../holded-api';
 import { getCardData, setCardData } from '../storage';
 import { addTag } from '../description-tags';
 import { updateCardDescription } from '../trello-api';
-import { fuzzyFilter } from '../search-utils';
 import { TRELLO_APP_KEY } from '../config';
 import type { HoldedProject, TrelloContext } from '../types';
 
 const t = window.TrelloPowerUp.iframe({ appKey: TRELLO_APP_KEY, appName: 'Holded' }) as unknown as TrelloContext;
 const searchInput = document.getElementById('search') as HTMLInputElement;
 const resultsDiv = document.getElementById('results') as HTMLDivElement;
+const reloadBtn = document.getElementById('reload-btn') as HTMLButtonElement;
+const tooltipEl = reloadBtn.querySelector('.tooltip') as HTMLSpanElement;
 
 let debounceTimer: ReturnType<typeof setTimeout>;
-let allProjects: HoldedProject[] | null = null;
+let totalProjects: number | null = null;
 
-async function loadProjects(): Promise<HoldedProject[]> {
-  if (allProjects) return allProjects;
-  resultsDiv.innerHTML = '<div class="loading">Cargando proyectos...</div>';
-  allProjects = await getProjects();
-  return allProjects;
+function updateTooltip() {
+  if (totalProjects !== null) {
+    tooltipEl.textContent = `${totalProjects} proyectos en caché — pulsa para recargar desde Holded`;
+  } else {
+    tooltipEl.textContent = 'Cargar lista de proyectos desde Holded';
+  }
 }
 
-function filterProjects(projects: HoldedProject[], query: string): HoldedProject[] {
-  return fuzzyFilter(projects, query, (p) =>
-    [p.name, p.status].filter(Boolean).join(' ')
-  );
-}
+function renderResults(projects: HoldedProject[], query: string) {
+  if (!query) {
+    resultsDiv.innerHTML = '<div class="empty">Busca un proyecto por nombre</div>';
+    return;
+  }
 
-function renderResults(projects: HoldedProject[]) {
   if (projects.length === 0) {
     resultsDiv.innerHTML = '<div class="empty">No se encontraron proyectos.</div>' +
       '<button class="create-btn" id="create-project-btn">+ Crear proyecto en Holded</button>';
@@ -78,10 +79,18 @@ function renderResults(projects: HoldedProject[]) {
 }
 
 async function doSearch() {
+  const query = searchInput.value.trim();
+  if (!query) {
+    renderResults([], query);
+    return;
+  }
+
+  resultsDiv.innerHTML = '<div class="loading">Buscando...</div>';
   try {
-    const projects = await loadProjects();
-    const filtered = filterProjects(projects, searchInput.value.trim());
-    renderResults(filtered);
+    const { total, results } = await searchProjects(query);
+    totalProjects = total;
+    updateTooltip();
+    renderResults(results, query);
   } catch (err) {
     resultsDiv.innerHTML = `<div class="error">Error: ${(err as Error).message}</div>`;
   }
@@ -92,5 +101,27 @@ searchInput.addEventListener('input', () => {
   debounceTimer = setTimeout(doSearch, 300);
 });
 
-// Initial load
-doSearch();
+reloadBtn.addEventListener('click', async () => {
+  reloadBtn.classList.add('spinning');
+  try {
+    const { total } = await refreshProjects();
+    totalProjects = total;
+    updateTooltip();
+    const query = searchInput.value.trim();
+    if (query) {
+      const { results } = await searchProjects(query);
+      renderResults(results, query);
+    }
+  } catch (err) {
+    resultsDiv.innerHTML = `<div class="error">Error: ${(err as Error).message}</div>`;
+  }
+  reloadBtn.classList.remove('spinning');
+});
+
+// Warm up cache
+searchProjects('').then(({ total }) => {
+  totalProjects = total;
+  updateTooltip();
+}).catch(() => {});
+
+renderResults([], '');

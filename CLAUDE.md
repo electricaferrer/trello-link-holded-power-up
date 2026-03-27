@@ -82,10 +82,12 @@ interface CardHoldedData {
 
 | Endpoint | Use |
 |---|---|
-| `/api/invoicing/v1/contacts` | List all contacts |
-| `/api/projects/v1/projects` | List all projects |
+| `GET /contacts/search?q=&force=1` | Search contacts (server-side filtering, KV-cached) |
+| `POST /contacts/refresh` | Force-refresh contacts cache from Holded |
+| `GET /projects/search?q=&force=1` | Search projects (server-side filtering, KV-cached) |
+| `POST /projects/refresh` | Force-refresh projects cache from Holded |
 
-All contacts/projects are loaded once and filtered client-side.
+Contacts and projects are cached in Cloudflare KV (15-min TTL). The worker fetches all records from Holded, stores them in KV, and filters server-side. The frontend calls `/contacts/search` or `/projects/search` with a query string.
 
 ## Common issues
 
