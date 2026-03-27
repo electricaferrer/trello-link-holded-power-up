@@ -4,6 +4,7 @@ import { addTag } from '../description-tags';
 import { updateCardDescription } from '../trello-api';
 import { fuzzyFilter } from '../search-utils';
 import { TRELLO_APP_KEY } from '../config';
+import { getCachedContacts, setCachedContacts, getCacheTimestamp } from '../contacts-cache';
 import type { HoldedContact, PendingContactSelection, TrelloContext } from '../types';
 
 const t = window.TrelloPowerUp.iframe({ appKey: TRELLO_APP_KEY, appName: 'Holded' }) as unknown as TrelloContext;
@@ -14,19 +15,27 @@ const tooltipEl = reloadBtn.querySelector('.tooltip') as HTMLSpanElement;
 
 let debounceTimer: ReturnType<typeof setTimeout>;
 let allContacts: HoldedContact[] | null = null;
-let contactsPromise: Promise<HoldedContact[]> | null = null;
+const RELOAD_COOLDOWN_MS = 5 * 60 * 1000;
 
 function updateTooltip() {
-  tooltipEl.textContent = allContacts
-    ? `${allContacts.length} contactos cargados — pulsa para recargar`
-    : 'Recargar lista de contactos desde Holded';
+  if (allContacts) {
+    const ts = getCacheTimestamp();
+    const ago = ts ? formatTimeAgo(ts) : '';
+    tooltipEl.textContent = `${allContacts.length} contactos${ago ? ` (${ago})` : ''} — pulsa para recargar`;
+  } else {
+    tooltipEl.textContent = 'Cargar lista de contactos desde Holded';
+  }
 }
 
-function fetchContacts(): Promise<HoldedContact[]> {
-  if (!contactsPromise) {
-    contactsPromise = fetchAllContacts().then((c) => { allContacts = c; updateTooltip(); return c; });
-  }
-  return contactsPromise;
+function formatTimeAgo(ts: number): string {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return 'ahora mismo';
+  if (mins < 60) return `hace ${mins} min`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `hace ${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `hace ${days}d`;
 }
 
 function stripNonDigits(v: string | null | undefined): string {
@@ -49,10 +58,20 @@ function addCreateButton() {
 }
 
 function renderResults(contacts: HoldedContact[], query: string) {
-  // Empty state: no query yet
   if (!query) {
-    resultsDiv.innerHTML = '<div class="empty">Busca un contacto por nombre, email o NIF</div>';
+    if (!allContacts) {
+      resultsDiv.innerHTML =
+        '<div class="empty">Pulsa ↻ para cargar los contactos desde Holded</div>';
+    } else {
+      resultsDiv.innerHTML = '<div class="empty">Busca un contacto por nombre, email o NIF</div>';
+    }
     addCreateButton();
+    return;
+  }
+
+  if (!allContacts) {
+    resultsDiv.innerHTML =
+      '<div class="empty">Primero carga los contactos pulsando ↻</div>';
     return;
   }
 
@@ -87,7 +106,6 @@ function renderResults(contacts: HoldedContact[], query: string) {
       const contact = contacts.find((c) => c.id === id)!;
 
       if (contact.shippingAddresses && contact.shippingAddresses.length > 0) {
-        // Multiple addresses — open address selection popup
         const pending: PendingContactSelection = {
           contactId: contact.id,
           contactName: contact.name,
@@ -97,7 +115,6 @@ function renderResults(contacts: HoldedContact[], query: string) {
         await t.set('card', 'shared', 'holdedPendingContact', pending);
         t.popup({ title: 'Seleccionar dirección', url: './select-address.html', height: 300 });
       } else {
-        // Single address — assign directly
         const addressLabel = [contact.billAddress?.address, contact.billAddress?.city]
           .filter(Boolean).join(', ') || undefined;
         const data = await getCardData(t);
@@ -116,28 +133,14 @@ function renderResults(contacts: HoldedContact[], query: string) {
   });
 }
 
-async function doSearch() {
+function doSearch() {
   const query = searchInput.value.trim();
-
-  if (!query) {
+  if (!allContacts) {
     renderResults([], query);
-    // Pre-load contacts in background for faster first search
-    fetchContacts().catch(() => {});
     return;
   }
-
-  // Show spinner only when user has typed and contacts aren't cached yet
-  if (!allContacts) {
-    resultsDiv.innerHTML = '<div class="loading">Cargando clientes...</div>';
-  }
-
-  try {
-    const contacts = await fetchContacts();
-    const filtered = filterContacts(contacts, query);
-    renderResults(filtered, query);
-  } catch (err) {
-    resultsDiv.innerHTML = `<div class="error">Error: ${(err as Error).message}</div>`;
-  }
+  const filtered = query ? filterContacts(allContacts, query) : [];
+  renderResults(filtered, query);
 }
 
 searchInput.addEventListener('input', () => {
@@ -145,13 +148,53 @@ searchInput.addEventListener('input', () => {
   debounceTimer = setTimeout(doSearch, 300);
 });
 
-reloadBtn.addEventListener('click', async () => {
-  allContacts = null;
-  contactsPromise = null;
+function showCooldownWarning() {
+  const existing = document.getElementById('cooldown-warning');
+  if (existing) existing.remove();
+
+  const banner = document.createElement('div');
+  banner.id = 'cooldown-warning';
+  banner.className = 'cooldown-warning';
+  banner.innerHTML = `
+    <span>La lista se recargó hace poco. Solo es necesario recargar si no encuentras un contacto que debería existir.</span>
+    <div class="cooldown-actions">
+      <button class="cooldown-dismiss" id="cooldown-dismiss">Entendido</button>
+      <button class="cooldown-force" id="cooldown-force">Recargar igualmente</button>
+    </div>
+  `;
+  reloadBtn.parentElement!.after(banner);
+
+  document.getElementById('cooldown-dismiss')!.addEventListener('click', () => banner.remove());
+  document.getElementById('cooldown-force')!.addEventListener('click', async () => {
+    banner.remove();
+    await fetchFromServer();
+  });
+}
+
+async function fetchFromServer() {
   reloadBtn.classList.add('spinning');
-  await doSearch();
+  try {
+    const contacts = await fetchAllContacts();
+    allContacts = contacts;
+    setCachedContacts(contacts);
+    updateTooltip();
+    doSearch();
+  } catch (err) {
+    resultsDiv.innerHTML = `<div class="error">Error: ${(err as Error).message}</div>`;
+  }
   reloadBtn.classList.remove('spinning');
+}
+
+reloadBtn.addEventListener('click', async () => {
+  const lastReload = getCacheTimestamp();
+  if (lastReload && (Date.now() - lastReload) < RELOAD_COOLDOWN_MS) {
+    showCooldownWarning();
+    return;
+  }
+  await fetchFromServer();
 });
 
-// Initial load
+// Load from cache on startup
+allContacts = getCachedContacts();
+updateTooltip();
 doSearch();
