@@ -14,8 +14,22 @@ async function fetchHolded<T>(url: string): Promise<T> {
   return response.json();
 }
 
+const PAGE_SIZE = 500;
+
+export async function fetchAllContacts(): Promise<HoldedContact[]> {
+  const all: HoldedContact[] = [];
+  for (let page = 1; ; page++) {
+    const batch = await fetchHolded<HoldedContact[]>(
+      `${PROXY_BASE}/api/invoicing/v1/contacts?page=${page}`
+    );
+    all.push(...batch);
+    if (batch.length < PAGE_SIZE) break;
+  }
+  return all;
+}
+
 export async function searchContacts(query: string): Promise<HoldedContact[]> {
-  const contacts = await fetchHolded<HoldedContact[]>(`${PROXY_BASE}/api/invoicing/v1/contacts`);
+  const contacts = await fetchAllContacts();
   if (!query) return contacts;
   const q = query.toLowerCase();
   return contacts.filter(

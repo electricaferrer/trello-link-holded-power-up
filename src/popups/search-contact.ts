@@ -1,4 +1,4 @@
-import { searchContacts } from '../holded-api';
+import { fetchAllContacts } from '../holded-api';
 import { getCardData, setCardData } from '../storage';
 import { addTag } from '../description-tags';
 import { updateCardDescription } from '../trello-api';
@@ -9,14 +9,22 @@ import type { HoldedContact, PendingContactSelection, TrelloContext } from '../t
 const t = window.TrelloPowerUp.iframe({ appKey: TRELLO_APP_KEY, appName: 'Holded' }) as unknown as TrelloContext;
 const searchInput = document.getElementById('search') as HTMLInputElement;
 const resultsDiv = document.getElementById('results') as HTMLDivElement;
+const reloadBtn = document.getElementById('reload-btn') as HTMLButtonElement;
+const tooltipEl = reloadBtn.querySelector('.tooltip') as HTMLSpanElement;
 
 let debounceTimer: ReturnType<typeof setTimeout>;
 let allContacts: HoldedContact[] | null = null;
 let contactsPromise: Promise<HoldedContact[]> | null = null;
 
+function updateTooltip() {
+  tooltipEl.textContent = allContacts
+    ? `${allContacts.length} contactos cargados — pulsa para recargar`
+    : 'Recargar lista de contactos desde Holded';
+}
+
 function fetchContacts(): Promise<HoldedContact[]> {
   if (!contactsPromise) {
-    contactsPromise = searchContacts('').then((c) => { allContacts = c; return c; });
+    contactsPromise = fetchAllContacts().then((c) => { allContacts = c; updateTooltip(); return c; });
   }
   return contactsPromise;
 }
@@ -135,6 +143,14 @@ async function doSearch() {
 searchInput.addEventListener('input', () => {
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(doSearch, 300);
+});
+
+reloadBtn.addEventListener('click', async () => {
+  allContacts = null;
+  contactsPromise = null;
+  reloadBtn.classList.add('spinning');
+  await doSearch();
+  reloadBtn.classList.remove('spinning');
 });
 
 // Initial load
