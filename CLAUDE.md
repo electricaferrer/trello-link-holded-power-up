@@ -9,7 +9,7 @@ Trello Power-Up that links Trello cards with Holded CRM contacts and projects. B
 Two separate components:
 
 - **Frontend** (Cloudflare Pages): Vite + TypeScript, no framework. Hosted at `trello-link-holded-power-up.pages.dev`
-- **Worker** (Cloudflare Workers): API proxy at `holded-proxy.mferrer.workers.dev`. Holds the Holded API key as a secret — frontend never sees it.
+- **Worker** (Cloudflare Workers): API proxy at `holded-proxy.electricaferrer.workers.dev`. Holds the Holded API key as a secret — frontend never sees it.
 
 ## Key conventions
 

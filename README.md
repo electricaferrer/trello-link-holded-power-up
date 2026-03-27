@@ -150,7 +150,7 @@ npx wrangler deploy
 cd ..
 ```
 
-El worker queda en `https://holded-proxy.mferrer.workers.dev`.
+El worker queda en `https://holded-proxy.electricaferrer.workers.dev`.
 
 ### 3. Build y deploy del frontend
 
