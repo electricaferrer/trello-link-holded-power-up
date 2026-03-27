@@ -136,6 +136,39 @@
       opacity: 1;
       transform: scale(1);
     }
+    .cooldown-warning {
+      margin-top: 6px;
+      padding: 8px 10px;
+      background: #fffae6;
+      border: 1px solid #f5cd47;
+      border-radius: 3px;
+      font-size: 12px;
+      color: #172b4d;
+      line-height: 1.4;
+    }
+    .cooldown-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .cooldown-actions button {
+      padding: 4px 10px;
+      border: none;
+      border-radius: 3px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .cooldown-dismiss {
+      background: #091e420f;
+      color: #172b4d;
+    }
+    .cooldown-dismiss:hover { background: #091e4224; }
+    .cooldown-force {
+      background: transparent;
+      color: #0079bf;
+    }
+    .cooldown-force:hover { background: #091e420f; }
     .create-btn {
       display: block;
       width: 100%;
@@ -172,6 +205,11 @@
       .reload-btn:hover { background: #a6c5e229; color: #b6c2cf; }
       .reload-btn .tooltip { background: #1d2125; color: #b6c2cf; }
       .reload-btn .tooltip::before { border-bottom-color: #1d2125; }
+      .cooldown-warning { background: #332e1b; border-color: #5a4b1a; color: #b6c2cf; }
+      .cooldown-dismiss { background: #a1bdd914; color: #b6c2cf; }
+      .cooldown-dismiss:hover { background: #a6c5e229; }
+      .cooldown-force { color: #579dff; }
+      .cooldown-force:hover { background: #a6c5e229; }
       .create-btn { color: #579dff; border-color: #a6c5e229; }
       .create-btn:hover { background: #a6c5e229; }
     }
