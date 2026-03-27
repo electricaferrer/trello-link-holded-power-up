@@ -4,22 +4,14 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 concurrency:
   group: deploy
   cancel-in-progress: true
 
 jobs:
   frontend:
-    name: Deploy frontend (GitHub Pages)
+    name: Deploy frontend (Cloudflare Pages)
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,12 +20,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - uses: actions/configure-pages@v4
-      - uses: actions/upload-pages-artifact@v3
+        env:
+          VITE_TRELLO_APP_KEY: ${{ secrets.VITE_TRELLO_APP_KEY }}
+          VITE_HOLDED_PROXY_URL: ${{ secrets.VITE_HOLDED_PROXY_URL }}
+      - uses: cloudflare/wrangler-action@v3
         with:
-          path: dist
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: pages deploy dist --project-name trello-link-holded-power-up
 
   worker:
     name: Deploy worker (Cloudflare Workers)
