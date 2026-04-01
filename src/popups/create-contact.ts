@@ -91,6 +91,7 @@ submitBtn.addEventListener('click', async () => {
       name: nameInput.value.trim(),
       code: codeInput.value.trim(),
       isperson,
+      type: 'lead',
       email: emailInput.value.trim() || undefined,
       phone: phoneInput.value.trim() || undefined,
       billAddress: {
