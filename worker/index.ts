@@ -140,6 +140,7 @@ interface ProjectRecord {
   id: string;
   name: string;
   status?: string;
+  archived?: number | null;
 }
 
 async function fetchAllProjectsFromHolded(apiKey: string): Promise<ProjectRecord[]> {
@@ -170,11 +171,13 @@ async function getProjects(env: Env, force: boolean): Promise<ProjectRecord[]> {
 
   const projects = await fetchAllProjectsFromHolded(env.HOLDED_API_KEY);
 
-  const slim = projects.map((p) => ({
-    id: p.id,
-    name: p.name,
-    status: p.status,
-  }));
+  const slim = projects
+    .filter((p) => !p.archived)
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      status: p.status,
+    }));
 
   await env.CACHE.put(PROJECTS_CACHE_KEY, JSON.stringify(slim), {
     expirationTtl: CACHE_TTL_SECONDS,
