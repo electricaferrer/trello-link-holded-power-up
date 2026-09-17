@@ -11,7 +11,7 @@ import {
   type ReportInvoiceStatus,
   type ReportSourceStatus,
 } from '../report-api';
-import { getCurrentMemberEmail } from '../trello-api';
+import { authorizeForMemberEmail, getCurrentMemberEmail } from '../trello-api';
 import { searchContacts, searchProjects } from '../holded-api';
 import { TRELLO_APP_KEY } from '../config';
 import type { CardHoldedData, HoldedContact, HoldedProject, TrelloContext } from '../types';
@@ -78,6 +78,31 @@ function clearMessage() {
   messageEl.textContent = '';
 }
 
+function showEmailRecovery(message: string, kind: 'error' | 'warning') {
+  showMessage(
+    `<span>${escapeHtml(message)}</span><button type="button" class="reauthorize-email" id="reauthorize-email">Conceder acceso a Trello</button>`,
+    kind,
+  );
+  document.getElementById('reauthorize-email')?.addEventListener('click', () => {
+    const button = document.getElementById('reauthorize-email') as HTMLButtonElement;
+    void retryMemberEmail(button);
+  }, { once: true });
+}
+
+async function retryMemberEmail(button: HTMLButtonElement) {
+  button.disabled = true;
+  button.textContent = 'Solicitando acceso…';
+  try {
+    const email = await authorizeForMemberEmail(t);
+    if (!email) throw new Error('Trello no ha devuelto un email para este usuario.');
+    operatorEmail = email;
+    renderRecipients();
+    clearMessage();
+  } catch (err) {
+    showEmailRecovery((err as Error).message || 'No se pudo obtener tu email de Trello.', 'error');
+  }
+}
+
 function renderRecipients() {
   const recipients = buildReportRecipients(operatorEmail, additionalEmails);
   recipientChipsEl.innerHTML = recipients.map((email) => {
@@ -134,10 +159,15 @@ function selectCustomer(contact: HoldedContact) {
   selectedCustomer = { id: contact.id, name: contact.name };
   customerQueryEl.value = contact.name;
   customerResultsEl.innerHTML = '';
-  selectedProject = null;
-  projectQueryEl.value = '';
-  projectResultsEl.innerHTML = '';
   void loadEstimates();
+}
+
+function invalidateCustomerSelection() {
+  selectedCustomer = null;
+  estimates = [];
+  estimateLoadGeneration += 1;
+  estimateEl.innerHTML = '<option value="">Selecciona un cliente</option>';
+  estimateEl.disabled = false;
 }
 
 function renderCustomerResults(contacts: HoldedContact[]) {
@@ -161,8 +191,6 @@ async function doCustomerSearch() {
     customerResultsEl.innerHTML = '';
     return;
   }
-  selectedCustomer = null;
-  estimateEl.innerHTML = '<option value="">Selecciona un cliente</option>';
   try {
     const result = await searchContacts(query);
     renderCustomerResults(result.results);
@@ -212,20 +240,21 @@ async function doProjectSearch() {
   }
 }
 
-function addAdditionalEmails() {
+function addAdditionalEmails(): boolean {
   const values = additionalEmailEl.value
     .split(/[,;\s]+/)
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
   if (values.some((email) => !EMAIL_PATTERN.test(email))) {
-    showMessage('Escribe emails válidos separados por comas.', 'error');
-    return;
+    showMessage('Escribe emails válidos separados por comas o punto y coma.', 'error');
+    return false;
   }
   additionalEmails = [...new Set([...additionalEmails, ...values])]
     .filter((email) => email !== operatorEmail);
   additionalEmailEl.value = '';
   clearMessage();
   renderRecipients();
+  return true;
 }
 
 function readFilters() {
@@ -262,9 +291,10 @@ async function submitReport(event: SubmitEvent) {
     return;
   }
   if (!operatorEmail) {
-    showMessage('No se pudo obtener tu email de Trello. No se puede solicitar el informe hasta que esté disponible.', 'error');
+    showEmailRecovery('No se pudo obtener tu email de Trello. No se puede solicitar el informe hasta que esté disponible.', 'error');
     return;
   }
+  if (additionalEmailEl.value.trim() && !addAdditionalEmails()) return;
 
   submitEl.disabled = true;
   submitEl.textContent = '€ Solicitando informe económico…';
@@ -317,7 +347,7 @@ async function initialize() {
     operatorEmail = email || '';
     fillForm(cardData);
     if (!operatorEmail) {
-      showMessage('No se pudo precargar tu email de Trello. La solicitud quedará bloqueada hasta poder obtenerlo.', 'warning');
+      showEmailRecovery('No se pudo precargar tu email de Trello. La solicitud quedará bloqueada hasta poder obtenerlo.', 'warning');
     }
     await loadEstimates();
     loadingEl.hidden = true;
@@ -330,6 +360,7 @@ async function initialize() {
 }
 
 customerQueryEl.addEventListener('input', () => {
+  if (customerQueryEl.value.trim() !== selectedCustomer?.name) invalidateCustomerSelection();
   window.clearTimeout(customerSearchTimer);
   customerSearchTimer = window.setTimeout(() => { void doCustomerSearch(); }, 300);
 });
@@ -339,9 +370,18 @@ projectQueryEl.addEventListener('input', () => {
 });
 addEmailEl.addEventListener('click', addAdditionalEmails);
 additionalEmailEl.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    addAdditionalEmails();
+  if (event.key === 'Enter' || event.key === 'Tab' || event.key === ',' || event.key === ';') {
+    const committed = addAdditionalEmails();
+    if (event.key !== 'Tab' || !committed) event.preventDefault();
+  }
+});
+additionalEmailEl.addEventListener('input', () => {
+  if (/[,;\s]/.test(additionalEmailEl.value)) addAdditionalEmails();
+});
+additionalEmailEl.addEventListener('blur', () => {
+  if (additionalEmailEl.value.trim()) {
+    const committed = addAdditionalEmails();
+    if (!committed) additionalEmailEl.focus();
   }
 });
 formEl.addEventListener('submit', (event) => { void submitReport(event); });

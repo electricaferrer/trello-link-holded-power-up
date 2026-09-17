@@ -178,6 +178,22 @@
     .message.warning { color: #974f0c; background: #fff7d6; }
     .message.success { color: var(--success); background: #dcfff1; }
     .message a { color: inherit; font-weight: 600; }
+    .reauthorize-email {
+      width: max-content;
+      margin-top: 3px;
+      padding: 5px 8px;
+      border: 1px solid currentColor;
+      border-radius: 5px;
+      color: inherit;
+      background: transparent;
+      font: inherit;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .reauthorize-email:hover { background: #ffffff66; }
+    .reauthorize-email:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+    .reauthorize-email:disabled { cursor: default; opacity: .6; }
     .primary-button {
       width: 100%;
       min-height: 40px;
@@ -212,6 +228,7 @@
       .message.error { background: #42221f; }
       .message.warning { background: #3b3218; }
       .message.success { background: #173d30; }
+      .reauthorize-email:hover { background: #ffffff1f; }
       .search-results { box-shadow: 0 8px 18px #00000040; }
     }
   </style>
@@ -265,10 +282,10 @@
         <div class="section-caption">Enviar a</div>
         <div class="recipient-chips" id="recipient-chips"></div>
         <div class="email-entry">
-          <input id="additional-email" type="email" autocomplete="email" placeholder="Añadir otro email…" aria-label="Añadir otro email" />
+          <input id="additional-email" type="text" inputmode="email" autocomplete="email" placeholder="Añadir otro email…" aria-label="Añadir otro email" />
           <button id="add-email" class="secondary-button" type="button">Añadir</button>
         </div>
-        <p class="hint">Tu email de Trello se incluye siempre. Puedes añadir más destinatarios.</p>
+        <p class="hint">Tu email de Trello se incluye siempre. Separa otros emails con coma, punto y coma, Enter o Tab.</p>
       </section>
 
       <details>

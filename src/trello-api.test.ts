@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getCurrentMemberEmail } from './trello-api';
+import { authorizeForMemberEmail, getCurrentMemberEmail } from './trello-api';
 
 describe('Trello member API', () => {
   afterEach(() => {
@@ -24,5 +24,41 @@ describe('Trello member API', () => {
     expect(requestUrl.pathname).toBe('/1/members/me');
     expect(requestUrl.searchParams.get('token')).toBe('trello-token');
     expect(requestUrl.searchParams.get('fields')).toBe('email');
+  });
+
+  it('requests the account scope when authorizing for the member email', async () => {
+    const authorize = vi.fn().mockResolvedValue(undefined);
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      email: 'operator@example.com',
+    })));
+    vi.stubGlobal('fetch', fetchImpl);
+    const t = {
+      getRestApi: () => ({
+        isAuthorized: () => Promise.resolve(false),
+        authorize,
+        getToken: () => Promise.resolve('trello-token'),
+      }),
+    } as any;
+
+    await expect(getCurrentMemberEmail(t)).resolves.toBe('operator@example.com');
+    expect(authorize).toHaveBeenCalledWith({ expiration: 'never', scope: 'read,write,account' });
+  });
+
+  it('reauthorizes an existing member token when email access is missing', async () => {
+    const authorize = vi.fn().mockResolvedValue(undefined);
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      email: 'operator@example.com',
+    })));
+    vi.stubGlobal('fetch', fetchImpl);
+    const t = {
+      getRestApi: () => ({
+        isAuthorized: () => Promise.resolve(true),
+        authorize,
+        getToken: () => Promise.resolve('trello-token'),
+      }),
+    } as any;
+
+    await expect(authorizeForMemberEmail(t)).resolves.toBe('operator@example.com');
+    expect(authorize).toHaveBeenCalledWith({ expiration: 'never', scope: 'read,write,account' });
   });
 });

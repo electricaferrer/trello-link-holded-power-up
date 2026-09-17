@@ -26,6 +26,76 @@
       display: grid;
       gap: 6px;
     }
+    .holded-toolbar {
+      display: flex;
+      justify-content: flex-end;
+      min-height: 28px;
+      margin-bottom: 2px;
+    }
+    .holded-actions { position: relative; }
+    .holded-actions-trigger {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0 0 5px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: #626f86;
+      cursor: pointer;
+      font: inherit;
+      font-size: 21px;
+      line-height: 20px;
+    }
+    .holded-actions-trigger:hover,
+    .holded-actions-trigger[aria-expanded="true"] { background: #091e420f; color: #172b4d; }
+    .holded-actions-trigger:focus-visible { outline: 2px solid #388bff; outline-offset: 2px; }
+    .holded-actions-menu {
+      position: absolute;
+      z-index: 10;
+      top: calc(100% + 4px);
+      right: 0;
+      width: 228px;
+      padding: 4px;
+      border: 1px solid #dfe1e6;
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 8px 20px #091e4233;
+    }
+    .holded-action {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      min-height: 34px;
+      padding: 7px 8px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: #172b4d;
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      text-align: left;
+    }
+    .holded-action:hover { background: #091e420f; }
+    .holded-action:focus-visible { outline: 2px solid #388bff; outline-offset: -1px; }
+    .holded-action-symbol {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 5px;
+      background: #deebff;
+      color: #0c66e4;
+      font-size: 12px;
+      font-weight: 700;
+    }
     .tag {
       display: grid;
       grid-template-columns: 16px minmax(0, 1fr);
@@ -1097,6 +1167,13 @@
         color: #b6c2cf;
       }
       .section-label { color: #a9abaf; }
+      .holded-actions-trigger { color: #8c9bab; }
+      .holded-actions-trigger:hover,
+      .holded-actions-trigger[aria-expanded="true"] { background: #a6c5e229; color: #b6c2cf; }
+      .holded-actions-menu { border-color: #45505f; background: #22272b; box-shadow: 0 8px 20px #030404; }
+      .holded-action { color: #b6c2cf; }
+      .holded-action:hover { background: #a6c5e229; }
+      .holded-action-symbol { background: #1c3b5e; color: #85b8ff; }
       .tag-contact {
         --tag-background: rgba(0, 121, 191, 0.2);
         background: rgba(0, 121, 191, 0.2);
@@ -2700,6 +2777,42 @@
     // NOTE: Keep appKey in sync with VITE_TRELLO_APP_KEY in .env
     var t = window.TrelloPowerUp.iframe({ appKey: '81d86f6c21c827e54947d36746561233', appName: 'Holded' });
 
+    function setActionsMenuOpen(open) {
+      var trigger = contentDiv.querySelector('[data-action-menu]');
+      var menu = contentDiv.querySelector('[data-action-menu-list]');
+      if (!trigger || !menu) return;
+      menu.hidden = !open;
+      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+
+    contentDiv.addEventListener('click', function(e) {
+      var target = e.target;
+      var trigger = target && target.closest ? target.closest('[data-action-menu]') : null;
+      var reportAction = target && target.closest ? target.closest('[data-report-action]') : null;
+      if (trigger && contentDiv.contains(trigger)) {
+        e.preventDefault();
+        e.stopPropagation();
+        setActionsMenuOpen(trigger.getAttribute('aria-expanded') !== 'true');
+        return;
+      }
+      if (reportAction && contentDiv.contains(reportAction)) {
+        e.preventDefault();
+        e.stopPropagation();
+        setActionsMenuOpen(false);
+        t.popup({
+          title: '€ Generar informe económico',
+          url: './src/popups/report.html',
+          height: 640,
+          mouseEvent: e,
+        });
+        return;
+      }
+      if (!target || !target.closest || !target.closest('.holded-actions')) setActionsMenuOpen(false);
+    });
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') setActionsMenuOpen(false);
+    });
+
     function render() {
       t.get('card', 'shared', 'holdedData')
         .then(function(data) {
@@ -2751,7 +2864,20 @@
           var documentsHtml = data.contactId
             ? '<div id="documents" class="documents" data-contact-id="' + escapeHtml(data.contactId || '') + '" data-project-id="' + escapeHtml(data.projectId || '') + '"></div>'
             : '';
+          var actionsHtml =
+            '<div class="holded-toolbar">' +
+              '<div class="holded-actions">' +
+                '<button type="button" class="holded-actions-trigger" data-action-menu aria-haspopup="menu" aria-expanded="false" aria-controls="holded-actions-menu" aria-label="Acciones de Holded" title="Acciones de Holded">⋮</button>' +
+                '<div class="holded-actions-menu" id="holded-actions-menu" data-action-menu-list role="menu" hidden>' +
+                  '<button type="button" class="holded-action" data-report-action role="menuitem">' +
+                    '<span class="holded-action-symbol" aria-hidden="true">€</span>' +
+                    '<span>Generar informe económico</span>' +
+                  '</button>' +
+                '</div>' +
+              '</div>' +
+            '</div>';
           contentDiv.innerHTML =
+            actionsHtml +
             '<div class="tags">' + tags.join('') + '</div>' +
             '<div id="important-message" data-contact-id="' + escapeHtml(data.contactId || '') + '"></div>' +
             documentsHtml;
