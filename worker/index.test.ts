@@ -95,11 +95,9 @@ describe('Holded proxy Worker V2 routes', () => {
   it('forwards report requests with the server token and selected invoice filter', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(internalJson({
       ok: true,
-      spreadsheetId: 'sheet-1',
-      spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
-      reportUrl: 'https://drive.google.com/file/d/report-1/view',
-      waybillCount: 3,
-      estimateId: 'estimate-1',
+      requestId: 'report-1',
+      status: 'queued',
+      acceptedAt: '2026-09-17T10:30:00.000Z',
     }));
     vi.stubGlobal('fetch', fetchImpl);
 
@@ -156,11 +154,9 @@ describe('Holded proxy Worker V2 routes', () => {
     });
     expect(await response.json()).toEqual({
       ok: true,
-      spreadsheetId: 'sheet-1',
-      spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
-      reportUrl: 'https://drive.google.com/file/d/report-1/view',
-      waybillCount: 3,
-      estimateId: 'estimate-1',
+      requestId: 'report-1',
+      status: 'queued',
+      acceptedAt: '2026-09-17T10:30:00.000Z',
     });
   });
 

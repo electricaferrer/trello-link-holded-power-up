@@ -64,11 +64,9 @@ describe('report API client', () => {
   it('requests report generation through the Worker without exposing a webhook token', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,
-      spreadsheetId: 'sheet-1',
-      spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
-      reportUrl: 'https://drive.google.com/file/d/report-1/view',
-      waybillCount: 3,
-      estimateId: 'estimate-1',
+      requestId: 'report-1',
+      status: 'queued',
+      acceptedAt: '2026-09-17T10:30:00.000Z',
     })));
     vi.stubGlobal('fetch', fetchImpl);
 
@@ -79,7 +77,12 @@ describe('report API client', () => {
       additionalEmails: [],
     }));
 
-    expect(result.reportUrl).toContain('drive.google.com');
+    expect(result).toEqual({
+      ok: true,
+      requestId: 'report-1',
+      status: 'queued',
+      acceptedAt: '2026-09-17T10:30:00.000Z',
+    });
     expect(fetchImpl.mock.calls[0][0]).toContain('/v2/reports');
     expect(fetchImpl.mock.calls[0][1]).toMatchObject({ method: 'POST' });
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body as string)).toEqual({

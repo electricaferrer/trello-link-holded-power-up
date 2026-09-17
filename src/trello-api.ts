@@ -50,8 +50,8 @@ export async function getCurrentMemberEmail(t: TrelloContext): Promise<string | 
 
 export async function authorizeForMemberEmail(t: TrelloContext): Promise<string | null> {
   const restApi = t.getRestApi();
-  await restApi.authorize({ expiration: 'never', scope: MEMBER_EMAIL_SCOPE });
-  const token = await restApi.getToken();
+  await restApi.clearToken();
+  const token = await restApi.authorize({ expiration: 'never', scope: MEMBER_EMAIL_SCOPE });
   if (!token) throw new Error('No se pudo obtener el token de Trello');
   return fetchCurrentMemberEmail(token);
 }

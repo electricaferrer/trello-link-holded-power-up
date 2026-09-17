@@ -1,5 +1,7 @@
 // @ts-nocheck
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { JSDOM } from 'jsdom';
 
 function installReportPopupDom() {
@@ -36,7 +38,8 @@ function installReportPopupDom() {
   `, { url: 'https://power-up.test/' });
   const restApi = {
     isAuthorized: () => Promise.resolve(true),
-    authorize: vi.fn(),
+    authorize: vi.fn().mockResolvedValue('trello-token'),
+    clearToken: vi.fn().mockResolvedValue(undefined),
     getToken: () => Promise.resolve('trello-token'),
   };
   const t = {
@@ -58,6 +61,55 @@ afterEach(() => {
 });
 
 describe('report popup', () => {
+  it('removes the hidden loading block from the layout', () => {
+    const html = readFileSync(resolve(__dirname, 'popups/report.html'), 'utf8');
+    const dom = new JSDOM(html, { pretendToBeVisual: true });
+    const loading = dom.window.document.getElementById('loading');
+
+    loading.hidden = true;
+
+    expect(dom.window.getComputedStyle(loading).display).toBe('none');
+    dom.window.close();
+  });
+
+  it('keeps autocomplete rows opaque and report sections flat', () => {
+    const html = readFileSync(resolve(__dirname, 'popups/report.html'), 'utf8');
+    const dom = new JSDOM(html, { pretendToBeVisual: true });
+    const row = dom.window.document.createElement('button');
+    row.className = 'report-search-item';
+    dom.window.document.body.append(row);
+
+    const rowStyle = dom.window.getComputedStyle(row);
+    const sectionStyle = dom.window.getComputedStyle(dom.window.document.querySelector('.report-section'));
+
+    expect(rowStyle.background).toBe('var(--surface)');
+    expect(sectionStyle.padding).toBe('0px');
+    expect(['', 'none']).toContain(sectionStyle.borderTopStyle);
+    dom.window.close();
+  });
+
+  it('defines restrained success and error motion with reduced-motion fallback', () => {
+    const html = readFileSync(resolve(__dirname, 'popups/report.html'), 'utf8');
+
+    expect(html).toContain('@keyframes report-success-in');
+    expect(html).toContain('@keyframes report-error-shake');
+    expect(html).toContain('.message--result.success, .message.error { animation: none; }');
+  });
+
+  it('hides the form controls when the accepted result takes over the modal', () => {
+    const html = readFileSync(resolve(__dirname, 'popups/report.html'), 'utf8');
+    const dom = new JSDOM(html, { pretendToBeVisual: true });
+    const form = dom.window.document.getElementById('report-form');
+    const message = dom.window.document.getElementById('message');
+    form.classList.add('report-form--result');
+    message.classList.add('message--result', 'success');
+    message.hidden = false;
+
+    expect(dom.window.getComputedStyle(dom.window.document.getElementById('submit-report')).display).toBe('none');
+    expect(dom.window.getComputedStyle(message).minHeight).toBe('calc(100vh - 16px)');
+    dom.window.close();
+  });
+
   it('shows loading while prefilled card data is being resolved', async () => {
     const { dom, t } = installReportPopupDom();
     let resolveCard;
@@ -99,11 +151,9 @@ describe('report popup', () => {
       if (String(url).includes('/v2/reports')) {
         return Promise.resolve(new Response(JSON.stringify({
           ok: true,
-          spreadsheetId: 'sheet-1',
-          spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
-          reportUrl: 'https://drive.google.com/file/d/report-1/view',
-          waybillCount: 3,
-          estimateId: 'estimate-1',
+          requestId: 'report-1',
+          status: 'queued',
+          acceptedAt: '2026-09-17T10:30:00.000Z',
         })));
       }
       return Promise.resolve(new Response('{}'));
@@ -115,6 +165,8 @@ describe('report popup', () => {
     await vi.waitFor(() => {
       expect(dom.window.document.getElementById('report-form').hidden).toBe(false);
     });
+    expect(dom.window.document.getElementById('loading').hidden).toBe(true);
+    expect(dom.window.document.getElementById('loading').style.display).toBe('none');
     expect(dom.window.document.getElementById('customer-query').value).toBe('Cliente Uno');
     expect(dom.window.document.getElementById('project-query').value).toBe('Obra Norte');
     expect(dom.window.document.querySelector('.recipient-chip').textContent).toContain('operator@example.com');
@@ -131,7 +183,11 @@ describe('report popup', () => {
     await vi.waitFor(() => {
       expect(dom.window.document.getElementById('message').className).toContain('success');
     });
-    expect(dom.window.document.getElementById('message').textContent).toContain('Informe económico solicitado correctamente');
+    expect(dom.window.document.getElementById('message').textContent).toContain('Solicitud aceptada.');
+    expect(dom.window.document.getElementById('message').textContent).toContain('El informe económico se generará en segundo plano.');
+    expect(dom.window.document.getElementById('report-form').classList).toContain('report-form--result');
+    expect(dom.window.document.getElementById('message').classList).toContain('message--result');
+    expect(dom.window.document.getElementById('message').querySelectorAll('button')).toHaveLength(0);
     const reportCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/v2/reports'));
     expect(reportCall).toBeTruthy();
     expect(JSON.parse(reportCall[1].body).email).toEqual(['operator@example.com', 'team@example.com']);
@@ -187,11 +243,9 @@ describe('report popup', () => {
       if (requestUrl.includes('/v2/reports')) {
         return Promise.resolve(new Response(JSON.stringify({
           ok: true,
-          spreadsheetId: 'sheet-1',
-          spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
-          reportUrl: 'https://drive.google.com/file/d/report-1/view',
-          waybillCount: 0,
-          estimateId: '',
+          requestId: 'report-1',
+          status: 'queued',
+          acceptedAt: '2026-09-17T10:30:00.000Z',
         })));
       }
       return Promise.resolve(new Response('{}'));
@@ -260,11 +314,9 @@ describe('report popup', () => {
       if (String(url).includes('/v2/reports')) {
         return Promise.resolve(new Response(JSON.stringify({
           ok: true,
-          spreadsheetId: 'sheet-1',
-          spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
-          reportUrl: 'https://drive.google.com/file/d/report-1/view',
-          waybillCount: 0,
-          estimateId: '',
+          requestId: 'report-1',
+          status: 'queued',
+          acceptedAt: '2026-09-17T10:30:00.000Z',
         })));
       }
       return Promise.resolve(new Response('{}'));

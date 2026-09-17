@@ -274,13 +274,15 @@ function readFilters() {
 }
 
 function renderSuccess(result: Awaited<ReturnType<typeof generateReport>>) {
+  formEl.classList.add('report-form--result');
   showMessage(
-    '<strong>Informe económico solicitado correctamente.</strong>' +
-    `<span>${result.waybillCount} albarán${result.waybillCount === 1 ? '' : 'es'} incluido${result.waybillCount === 1 ? '' : 's'}.</span>` +
-    `<a href="${escapeHtml(result.reportUrl)}" target="_blank" rel="noopener">Abrir informe PDF ↗</a>` +
-    `<a href="${escapeHtml(result.spreadsheetUrl)}" target="_blank" rel="noopener">Abrir hoja de cálculo ↗</a>`,
+    '<span class="result-mark result-mark--success" aria-hidden="true">✓</span>' +
+    '<strong>Solicitud aceptada.</strong>' +
+    '<span>El informe económico se generará en segundo plano.</span>' +
+    `<small>Referencia: ${escapeHtml(result.requestId)}</small>`,
     'success',
   );
+  messageEl.classList.add('message--result');
 }
 
 async function submitReport(event: SubmitEvent) {
@@ -351,9 +353,11 @@ async function initialize() {
     }
     await loadEstimates();
     loadingEl.hidden = true;
+    loadingEl.style.display = 'none';
     formEl.hidden = false;
   } catch (err) {
     loadingEl.hidden = true;
+    loadingEl.style.display = 'none';
     loadErrorEl.textContent = `No se pudo preparar el formulario: ${(err as Error).message}`;
     loadErrorEl.hidden = false;
   }

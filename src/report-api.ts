@@ -67,13 +67,16 @@ export interface ReportEstimateSearchResult {
   nextCursor?: string | null;
 }
 
-export interface ReportSuccessResponse {
+export interface ReportAcceptedResponse {
   ok: true;
-  spreadsheetId: string;
-  spreadsheetUrl: string;
-  reportUrl: string;
-  waybillCount: number;
-  estimateId: string;
+  requestId: string;
+  status: 'queued';
+  acceptedAt: string;
+}
+
+export interface ReportRejectedResponse {
+  ok: false;
+  error: string;
 }
 
 function buildRecipients(operatorEmail: string, additionalEmails: string[]): string[] {
@@ -135,8 +138,8 @@ export function searchReportEstimates(
   );
 }
 
-export async function generateReport(request: ReportRequest): Promise<ReportSuccessResponse> {
-  const result = await fetchJson<ReportSuccessResponse | { ok: false; error?: string }>(
+export async function generateReport(request: ReportRequest): Promise<ReportAcceptedResponse> {
+  const result = await fetchJson<ReportAcceptedResponse | ReportRejectedResponse>(
     `${HOLDED_PROXY_URL}/v2/reports`,
     {
       method: 'POST',

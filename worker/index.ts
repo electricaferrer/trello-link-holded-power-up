@@ -1134,20 +1134,17 @@ function normalizeReportResponse(value: unknown): Record<string, unknown> | null
   }
   if (
     value.ok !== true ||
-    typeof value.spreadsheetId !== 'string' ||
-    typeof value.spreadsheetUrl !== 'string' ||
-    typeof value.reportUrl !== 'string' ||
-    typeof value.waybillCount !== 'number'
+    typeof value.requestId !== 'string' ||
+    value.status !== 'queued' ||
+    typeof value.acceptedAt !== 'string'
   ) {
     return null;
   }
   return {
     ok: true,
-    spreadsheetId: value.spreadsheetId,
-    spreadsheetUrl: value.spreadsheetUrl,
-    reportUrl: value.reportUrl,
-    waybillCount: value.waybillCount,
-    estimateId: typeof value.estimateId === 'string' ? value.estimateId : '',
+    requestId: value.requestId,
+    status: value.status,
+    acceptedAt: value.acceptedAt,
   };
 }
 
