@@ -61,12 +61,13 @@ pnpm exec wrangler deploy --config worker/wrangler.toml
 Note: Cloudflare edge propagation can lag a few seconds after deploy — cache-bust with `?cb=…` when
 verifying, and prefer the deployment-specific URL to bypass the root-domain cache.
 
-## Worker secret
+## Worker secrets
 
-One secret — the internal API key:
+The Worker needs two secrets:
 
 ```bash
 echo "efk_..." | pnpm exec wrangler secret put EF_INTERNAL_API_KEY --name holded-proxy
+echo "<report-webhook-token>" | pnpm exec wrangler secret put REPORT_WEBHOOK_TOKEN --name holded-proxy
 ```
 
 Must pipe via `echo` — non-interactive `wrangler secret put` otherwise sends an empty string. The key
@@ -139,6 +140,7 @@ route is internal-only — no Holded pass-through, no KV cache. Unknown routes �
 | `GET /v2/contacts/:id` | `GET /contacts/:id` | Contact detail (camelCase `customFields`) for the "Importante" box + address picker |
 | `POST /v2/contacts?idempotencyKey=` | `POST /contacts` | Create contact (camelCase payload incl. `defaults`) |
 | `POST /v2/contacts/:id/shipping-addresses?idempotencyKey=` | `POST /contacts/:id/shipping-addresses` | Append a shipping address |
+| `POST /v2/reports` | Apps Script report endpoint | Generate an economic report; the Worker injects `REPORT_WEBHOOK_TOKEN` |
 
 - The bearer key is **never** returned in any error. Writes forward a per-submit `Idempotency-Key`.
 - `type` ∈ `sales-orders` \| `waybills` \| `invoices` \| `estimates`. `scope` ∈ `matched` (sends `projectId`) \| `all`

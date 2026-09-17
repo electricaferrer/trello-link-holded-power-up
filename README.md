@@ -15,12 +15,13 @@ Power-Up de Trello para vincular tarjetas con clientes y proyectos de [Holded](h
                               ┌──────────────────────────┐                │
                               │   Cloudflare Worker      │────────────────┘
                               │   holded-proxy           │
-                              │   (API key como secret)  │
+                              │   (credenciales como    │
+                              │   secrets)              │
                               └──────────────────────────┘
 ```
 
 - **Frontend** — Vite + TypeScript, sin framework. Hosted en Cloudflare Pages.
-- **Worker** — Proxy en Cloudflare Workers que inyecta el API key de Holded. El frontend nunca toca la API key.
+- **Worker** — Proxy en Cloudflare Workers que inyecta las credenciales necesarias. El frontend nunca toca estos secretos.
 - **Storage** — Trello Power-Up storage (`t.set('card', 'shared', ...)`) para guardar los datos por tarjeta.
 
 ## Funcionalidades
@@ -108,7 +109,6 @@ trello-link-holded-power-up/
 │   ├── description-tags.ts       # Helpers para tags {{ contact/project: ... }} en descripción
 │   ├── trello-api.ts             # OAuth + PUT descripción vía Trello REST API
 │   ├── capabilities/
-│   │   ├── card-buttons.ts       # Botones "Vincular cliente/proyecto"
 │   │   ├── card-badges.ts        # Badges en vista de tablero
 │   │   └── card-back-section.ts  # Sección iframe en detalle de tarjeta
 │   └── popups/
@@ -141,13 +141,15 @@ trello-link-holded-power-up/
 
 ## Deploy
 
-### 1. Configurar las API keys de Holded en el Worker
+### 1. Configurar los secretos del Worker
 
 ```bash
-echo "TU_API_KEY_V2_DE_HOLDED" | pnpm exec wrangler secret put HOLDED_API_V2 --name holded-proxy
+echo "TU_API_KEY_INTERNA" | pnpm exec wrangler secret put EF_INTERNAL_API_KEY --name holded-proxy
+echo "TU_TOKEN_DEL_WEBHOOK" | pnpm exec wrangler secret put REPORT_WEBHOOK_TOKEN --name holded-proxy
 ```
 
-`HOLDED_API_KEY` se mantiene para llamadas legacy V1 si se necesita actualizar direcciones de envío existentes.
+`REPORT_WEBHOOK_TOKEN` es el token que utiliza el Worker para generar informes económicos. No debe
+incluirse en el frontend ni en el repositorio.
 
 ### 2. Desplegar el Worker
 
@@ -171,7 +173,7 @@ El frontend queda en `https://trello-link-holded-power-up.pages.dev`.
 1. Ir a [trello.com/power-ups/admin](https://trello.com/power-ups/admin)
 2. Crear nuevo Power-Up
 3. URL del iframe connector: `https://trello-link-holded-power-up.pages.dev/`
-4. Capabilities a activar: `card-buttons`, `card-badges`, `card-back-section`
+4. Capabilities a activar: `card-badges`, `card-back-section`
 5. Allowed origins: `https://trello-link-holded-power-up.pages.dev` (necesario para OAuth)
 
 ## Stack técnico

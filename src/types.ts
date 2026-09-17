@@ -211,7 +211,8 @@ export interface TrelloContext {
 }
 
 export interface TrelloRestApi {
-  authorize(opts: { expiration: string; scope: string }): Promise<void>;
+  authorize(opts: { expiration: string; scope: string }): Promise<string>;
+  clearToken(): Promise<void>;
   isAuthorized(): Promise<boolean>;
   getToken(): Promise<string | null>;
 }

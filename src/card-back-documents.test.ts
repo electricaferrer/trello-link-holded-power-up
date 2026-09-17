@@ -201,6 +201,32 @@ const salesOrder = (id, documentNumber, extra = {}) => ({
 });
 
 describe('card-back document view (internal API v2)', () => {
+  it('opens the economic report from the hidden Holded actions menu', async () => {
+    const { dom, popupCalls } = loadCardBack({ salesOrders: [], waybills: [], estimates: [] });
+    await waitForRender();
+
+    const trigger = dom.window.document.querySelector('[data-action-menu]');
+    const menu = dom.window.document.querySelector('[data-action-menu-list]');
+    const reportAction = dom.window.document.querySelector('[data-report-action]');
+    expect(trigger?.getAttribute('aria-label')).toBe('Acciones de Holded');
+    expect(trigger?.getAttribute('aria-expanded')).toBe('false');
+    expect(menu?.hidden).toBe(true);
+
+    trigger.click();
+
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(menu.hidden).toBe(false);
+
+    reportAction.click();
+
+    expect(popupCalls).toContainEqual(expect.objectContaining({
+      title: '€ Generar informe económico',
+      url: './src/popups/report.html',
+      height: 640,
+      mouseEvent: expect.anything(),
+    }));
+  });
+
   it('shows Partes de trabajo and Pedidos without a separate Almacén tab', async () => {
     const { dom, urls } = loadCardBack({ salesOrders: [], waybills: [], estimates: [] });
     await waitForRender();
