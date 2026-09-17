@@ -3,6 +3,7 @@ import worker from './index';
 
 const env = {
   EF_INTERNAL_API_KEY: 'efk_test',
+  REPORT_WEBHOOK_TOKEN: 'report-token',
 };
 
 describe('Holded proxy Worker V2 routes', () => {
@@ -88,6 +89,78 @@ describe('Holded proxy Worker V2 routes', () => {
     expect(body).toEqual({
       total: 1,
       results: [{ id: 'project-1', name: 'Obra Norte', contactName: 'Melchor Mascaró S.A.', key: 'AUT3' }],
+    });
+  });
+
+  it('forwards report requests with the server token and selected invoice filter', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(internalJson({
+      ok: true,
+      spreadsheetId: 'sheet-1',
+      spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+      reportUrl: 'https://drive.google.com/file/d/report-1/view',
+      waybillCount: 3,
+      estimateId: 'estimate-1',
+    }));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await worker.fetch(
+      new Request('https://proxy.test/v2/reports', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'report-1',
+          customerId: 'contact-1',
+          projectId: 'project-1',
+          estimateId: 'estimate-1',
+          email: ['operator@example.com', 'team@example.com'],
+          filters: {
+            invoiceStatus: 'all',
+            approvalStatus: 'approved',
+            extraStatus: 'not_extra',
+            sourceStatus: 'with_salesorder',
+            textQuery: 'avería',
+          },
+        }),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://script.google.com/macros/s/AKfycbxIRCGF-J5lJp4JtmIIUSxF4P0ZbwVSH8NMLZkYO47OQk3-yIcNpqrlF8SqA488eZLo/exec',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      }),
+    );
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({
+      token: 'report-token',
+      requestId: 'report-1',
+      customerId: 'contact-1',
+      projectId: 'project-1',
+      estimateId: 'estimate-1',
+      email: ['operator@example.com', 'team@example.com'],
+      filters: {
+        invoiceStatus: 'all',
+        approvalStatus: 'approved',
+        extraStatus: 'not_extra',
+        sourceStatus: 'with_salesorder',
+        docNumberQuery: '',
+        textQuery: 'avería',
+        productQuery: '',
+        tagQuery: '',
+        warehouseQuery: '',
+        minTotal: '',
+        maxTotal: '',
+      },
+    });
+    expect(await response.json()).toEqual({
+      ok: true,
+      spreadsheetId: 'sheet-1',
+      spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+      reportUrl: 'https://drive.google.com/file/d/report-1/view',
+      waybillCount: 3,
+      estimateId: 'estimate-1',
     });
   });
 

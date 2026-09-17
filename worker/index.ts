@@ -9,6 +9,7 @@ import {
 
 interface Env {
   EF_INTERNAL_API_KEY?: string;
+  REPORT_WEBHOOK_TOKEN?: string;
 }
 
 const CORS_HEADERS = {
@@ -16,6 +17,27 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
+
+const REPORT_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbxIRCGF-J5lJp4JtmIIUSxF4P0ZbwVSH8NMLZkYO47OQk3-yIcNpqrlF8SqA488eZLo/exec';
+const REPORT_WEBHOOK_TIMEOUT_MS = 30_000;
+const REPORT_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const REPORT_FILTER_DEFAULTS = {
+  invoiceStatus: 'not_invoiced',
+  approvalStatus: 'all',
+  extraStatus: 'all',
+  sourceStatus: 'all',
+  docNumberQuery: '',
+  textQuery: '',
+  productQuery: '',
+  tagQuery: '',
+  warehouseQuery: '',
+  minTotal: '',
+  maxTotal: '',
+} as const;
+const REPORT_APPROVAL_STATUSES = ['all', 'approved', 'not_approved'] as const;
+const REPORT_EXTRA_STATUSES = ['all', 'extra', 'not_extra'] as const;
+const REPORT_SOURCE_STATUSES = ['all', 'with_salesorder', 'without_salesorder'] as const;
+const REPORT_INVOICE_STATUSES = ['not_invoiced', 'invoiced', 'all'] as const;
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -990,6 +1012,193 @@ async function handleV2AddShippingAddress(request: Request, url: URL, env: Env):
   }
 }
 
+type ReportApprovalStatus = typeof REPORT_APPROVAL_STATUSES[number];
+type ReportExtraStatus = typeof REPORT_EXTRA_STATUSES[number];
+type ReportSourceStatus = typeof REPORT_SOURCE_STATUSES[number];
+type ReportInvoiceStatus = typeof REPORT_INVOICE_STATUSES[number];
+
+interface ReportRequest {
+  requestId?: string;
+  customerId: string;
+  projectId?: string;
+  estimateId?: string;
+  startDate?: string;
+  endDate?: string;
+  email: string[];
+  filters: {
+    invoiceStatus: ReportInvoiceStatus;
+    approvalStatus: ReportApprovalStatus;
+    extraStatus: ReportExtraStatus;
+    sourceStatus: ReportSourceStatus;
+    docNumberQuery: string;
+    textQuery: string;
+    productQuery: string;
+    tagQuery: string;
+    warehouseQuery: string;
+    minTotal: string;
+    maxTotal: string;
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readOptionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string' || value.trim().length > 200) {
+    throw new Error(`${field} no es válido.`);
+  }
+  return value.trim();
+}
+
+function readReportRequest(body: unknown): { ok: true; request: ReportRequest } | { ok: false; error: string } {
+  if (!isRecord(body)) return { ok: false, error: 'El cuerpo debe ser un objeto JSON.' };
+
+  try {
+    const customerId = readOptionalString(body.customerId, 'customerId');
+    if (!customerId) return { ok: false, error: 'customerId es obligatorio.' };
+
+    const emailValue = body.email;
+    if (!Array.isArray(emailValue) || emailValue.length === 0 || emailValue.length > 50) {
+      return { ok: false, error: 'email debe ser un array con al menos un destinatario.' };
+    }
+    const email = [...new Set(emailValue.map((value) => typeof value === 'string' ? value.trim().toLowerCase() : ''))];
+    if (email.some((value) => !REPORT_EMAIL_PATTERN.test(value))) {
+      return { ok: false, error: 'Todos los destinatarios deben ser emails válidos.' };
+    }
+
+    const inputFilters = isRecord(body.filters) ? body.filters : {};
+    const invoiceStatus = inputFilters.invoiceStatus ?? REPORT_FILTER_DEFAULTS.invoiceStatus;
+    const approvalStatus = inputFilters.approvalStatus ?? REPORT_FILTER_DEFAULTS.approvalStatus;
+    const extraStatus = inputFilters.extraStatus ?? REPORT_FILTER_DEFAULTS.extraStatus;
+    const sourceStatus = inputFilters.sourceStatus ?? REPORT_FILTER_DEFAULTS.sourceStatus;
+    if (!REPORT_INVOICE_STATUSES.includes(invoiceStatus as ReportInvoiceStatus)) {
+      return { ok: false, error: 'invoiceStatus no es válido.' };
+    }
+    if (!REPORT_APPROVAL_STATUSES.includes(approvalStatus as ReportApprovalStatus)) {
+      return { ok: false, error: 'approvalStatus no es válido.' };
+    }
+    if (!REPORT_EXTRA_STATUSES.includes(extraStatus as ReportExtraStatus)) {
+      return { ok: false, error: 'extraStatus no es válido.' };
+    }
+    if (!REPORT_SOURCE_STATUSES.includes(sourceStatus as ReportSourceStatus)) {
+      return { ok: false, error: 'sourceStatus no es válido.' };
+    }
+
+    const filters = {
+      invoiceStatus: invoiceStatus as ReportInvoiceStatus,
+      approvalStatus: approvalStatus as ReportApprovalStatus,
+      extraStatus: extraStatus as ReportExtraStatus,
+      sourceStatus: sourceStatus as ReportSourceStatus,
+      docNumberQuery: readOptionalString(inputFilters.docNumberQuery, 'docNumberQuery') ?? REPORT_FILTER_DEFAULTS.docNumberQuery,
+      textQuery: readOptionalString(inputFilters.textQuery, 'textQuery') ?? REPORT_FILTER_DEFAULTS.textQuery,
+      productQuery: readOptionalString(inputFilters.productQuery, 'productQuery') ?? REPORT_FILTER_DEFAULTS.productQuery,
+      tagQuery: readOptionalString(inputFilters.tagQuery, 'tagQuery') ?? REPORT_FILTER_DEFAULTS.tagQuery,
+      warehouseQuery: readOptionalString(inputFilters.warehouseQuery, 'warehouseQuery') ?? REPORT_FILTER_DEFAULTS.warehouseQuery,
+      minTotal: readOptionalString(inputFilters.minTotal, 'minTotal') ?? REPORT_FILTER_DEFAULTS.minTotal,
+      maxTotal: readOptionalString(inputFilters.maxTotal, 'maxTotal') ?? REPORT_FILTER_DEFAULTS.maxTotal,
+    };
+
+    return {
+      ok: true,
+      request: {
+        requestId: readOptionalString(body.requestId, 'requestId'),
+        customerId,
+        projectId: readOptionalString(body.projectId, 'projectId'),
+        estimateId: readOptionalString(body.estimateId, 'estimateId'),
+        startDate: readOptionalString(body.startDate, 'startDate'),
+        endDate: readOptionalString(body.endDate, 'endDate'),
+        email,
+        filters,
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'La petición no es válida.' };
+  }
+}
+
+function reportErrorResponse(message: string, status = 502): Response {
+  return jsonResponse({ ok: false, error: message }, status);
+}
+
+function normalizeReportResponse(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  if (value.ok === false) {
+    return {
+      ok: false,
+      error: typeof value.error === 'string' && value.error.trim()
+        ? value.error.trim()
+        : 'No se pudo generar el informe.',
+    };
+  }
+  if (
+    value.ok !== true ||
+    typeof value.spreadsheetId !== 'string' ||
+    typeof value.spreadsheetUrl !== 'string' ||
+    typeof value.reportUrl !== 'string' ||
+    typeof value.waybillCount !== 'number'
+  ) {
+    return null;
+  }
+  return {
+    ok: true,
+    spreadsheetId: value.spreadsheetId,
+    spreadsheetUrl: value.spreadsheetUrl,
+    reportUrl: value.reportUrl,
+    waybillCount: value.waybillCount,
+    estimateId: typeof value.estimateId === 'string' ? value.estimateId : '',
+  };
+}
+
+async function handleV2Report(request: Request, env: Env): Promise<Response> {
+  const webhookToken = env.REPORT_WEBHOOK_TOKEN;
+  if (!webhookToken) return reportErrorResponse('Configuración del informe no disponible.', 500);
+
+  const parsed = await readJsonBody(request);
+  if (!parsed.ok) return reportErrorResponse('Cuerpo JSON no válido.', 400);
+
+  const reportRequest = readReportRequest(parsed.body);
+  if (!reportRequest.ok) return reportErrorResponse(reportRequest.error, 400);
+
+  const payload = {
+    token: webhookToken,
+    ...reportRequest.request,
+  };
+
+  let response: Response;
+  try {
+    response = await fetch(REPORT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(REPORT_WEBHOOK_TIMEOUT_MS),
+    });
+  } catch {
+    return reportErrorResponse('No se pudo contactar con el generador de informes.');
+  }
+
+  let upstreamBody: unknown;
+  try {
+    upstreamBody = JSON.parse(await response.text());
+  } catch {
+    return reportErrorResponse('El generador de informes devolvió una respuesta no válida.');
+  }
+
+  const normalized = normalizeReportResponse(upstreamBody);
+  if (!normalized) return reportErrorResponse('El generador de informes devolvió una respuesta no válida.');
+  if (!response.ok) {
+    return reportErrorResponse(
+      normalized.ok === false ? normalized.error as string : 'No se pudo generar el informe.',
+      502,
+    );
+  }
+  return jsonResponse(normalized);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'OPTIONS') {
@@ -1014,6 +1223,9 @@ export default {
     }
     if (request.method === 'POST' && /^\/v2\/contacts\/[^/]+\/shipping-addresses$/.test(url.pathname)) {
       return handleV2AddShippingAddress(request, url, env);
+    }
+    if (request.method === 'POST' && url.pathname === '/v2/reports') {
+      return handleV2Report(request, env);
     }
     if (request.method === 'GET' && url.pathname.startsWith('/v2/contacts/')) {
       return handleV2ContactDetail(url, env);

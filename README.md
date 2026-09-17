@@ -108,7 +108,7 @@ trello-link-holded-power-up/
 │   ├── description-tags.ts       # Helpers para tags {{ contact/project: ... }} en descripción
 │   ├── trello-api.ts             # OAuth + PUT descripción vía Trello REST API
 │   ├── capabilities/
-│   │   ├── card-buttons.ts       # Botones "Vincular cliente/proyecto"
+│   │   ├── card-buttons.ts       # Botón "€ Generar informe económico" en la tarjeta
 │   │   ├── card-badges.ts        # Badges en vista de tablero
 │   │   └── card-back-section.ts  # Sección iframe en detalle de tarjeta
 │   └── popups/

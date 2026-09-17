@@ -12,6 +12,7 @@ export default defineConfig({
         'create-contact': resolve(__dirname, 'src/popups/create-contact.html'),
         'select-address': resolve(__dirname, 'src/popups/select-address.html'),
         'unlink': resolve(__dirname, 'src/popups/unlink.html'),
+        'report': resolve(__dirname, 'src/popups/report.html'),
       },
     },
   },

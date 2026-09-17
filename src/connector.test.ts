@@ -21,6 +21,7 @@ describe('connector capabilities', () => {
       'board-buttons',
       'card-back-section',
       'card-badges',
+      'card-buttons',
       'card-detail-badges',
     ]);
     expect((capabilities['board-buttons'] as () => unknown)()).toEqual([]);

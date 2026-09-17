@@ -29,3 +29,16 @@ export async function updateCardDescription(t: TrelloContext, newDesc: string): 
     throw new Error(`Error actualizando descripción: ${response.status}`);
   }
 }
+
+export async function getCurrentMemberEmail(t: TrelloContext): Promise<string | null> {
+  const token = await ensureAuthorized(t);
+  const response = await fetch(
+    `https://api.trello.com/1/members/me?key=${TRELLO_API_KEY}&token=${token}&fields=email`,
+  );
+  if (!response.ok) throw new Error(`No se pudo obtener el email de Trello: ${response.status}`);
+
+  const body: unknown = await response.json();
+  if (!body || typeof body !== 'object' || !('email' in body)) return null;
+  const email = (body as { email?: unknown }).email;
+  return typeof email === 'string' && email.trim() ? email.trim().toLowerCase() : null;
+}
