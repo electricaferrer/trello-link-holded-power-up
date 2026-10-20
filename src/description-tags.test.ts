@@ -73,6 +73,33 @@ describe('syncDescriptionSection', () => {
     expect(result).toContain('{{ contact: Cliente Uno | Obra Norte }}');
   });
 
+  it('links directly to a maps URL typed into the address field', () => {
+    const result = syncDescriptionSection('', {
+      contactId: 'customer-1',
+      contactName: 'Databob Real Estate SL',
+      addressLabel: 'Finca Muro',
+      addressMapQuery: 'https://maps.app.goo.gl/uukbAwPsPKZh5bYm7, 07440 Muro, Illes Balears, España',
+    });
+
+    expect(result).toContain(
+      '**Dirección:** [Finca Muro · 07440 Muro, Illes Balears, España ↗](https://maps.app.goo.gl/uukbAwPsPKZh5bYm7)',
+    );
+    expect(result).not.toContain('google.com/maps/search');
+  });
+
+  it('falls back to the address label when the address is only a maps URL', () => {
+    const result = syncDescriptionSection('', {
+      contactId: 'customer-1',
+      contactName: 'Cliente Uno',
+      addressLabel: 'Finca Muro',
+      addressMapQuery: 'https://maps.app.goo.gl/uukbAwPsPKZh5bYm7',
+    });
+
+    expect(result).toContain(
+      '**Dirección:** [Finca Muro ↗](https://maps.app.goo.gl/uukbAwPsPKZh5bYm7)',
+    );
+  });
+
   it('adds readable mobile actions and keeps the searchable tags at the end', () => {
     const result = syncDescriptionSection('Revisar medidas antes de empezar.', {
       contactId: 'customer-1',

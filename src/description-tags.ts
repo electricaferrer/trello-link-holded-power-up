@@ -27,6 +27,35 @@ function escapeMarkdownLabel(value: string): string {
     .replace(/([\\[\]*_~`])/g, '\\$1');
 }
 
+const URL_IN_TEXT_REGEX = /https?:\/\/[^\s,]+/i;
+
+// Holded users often paste a Google Maps link into the address field. Searching
+// Google Maps for that URL finds nothing, so link straight to it and keep only
+// the remaining address text (or the address label) as the visible label.
+function buildAddressLink(
+  mapQuery: string,
+  addressLabel: string | undefined,
+): { label: string; url: string } {
+  const match = mapQuery.match(URL_IN_TEXT_REGEX);
+  if (match) {
+    try {
+      const url = new URL(match[0]).href.replace(/\(/g, '%28').replace(/\)/g, '%29');
+      const rest = mapQuery
+        .replace(match[0], '')
+        .replace(/^[\s,]+|[\s,]+$/g, '')
+        .replace(/\s*,\s*,\s*/g, ', ');
+      const label = [addressLabel?.trim(), rest].filter(Boolean).join(' · ') || 'Ver ubicación';
+      return { label, url };
+    } catch {
+      // Not a valid URL — fall through to a regular search.
+    }
+  }
+  return {
+    label: mapQuery,
+    url: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(mapQuery)}`,
+  };
+}
+
 function stripGeneratedSection(desc: string): { description: string; found: boolean } {
   const sectionStart = Math.max(
     ...SECTION_SIGNATURES.map((signature) => desc.lastIndexOf(signature)),
@@ -112,9 +141,10 @@ export function syncDescriptionSection(desc: string, data: CardHoldedData): stri
     }
 
     if (addressMapQuery) {
+      const address = buildAddressLink(addressMapQuery, data.addressLabel);
       lines.push(
         '',
-        `**Dirección:** [${escapeMarkdownLabel(addressMapQuery)} ↗](https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addressMapQuery)})`
+        `**Dirección:** [${escapeMarkdownLabel(address.label)} ↗](${address.url})`
       );
     }
   }
