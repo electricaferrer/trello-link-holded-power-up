@@ -100,6 +100,35 @@ describe('syncDescriptionSection', () => {
     );
   });
 
+  it('keeps commas that belong to a maps URL, such as coordinates', () => {
+    const result = syncDescriptionSection('', {
+      contactId: 'customer-1',
+      contactName: 'Cliente Uno',
+      addressLabel: 'Finca Muro',
+      addressMapQuery: 'https://www.google.com/maps/place/Muro/@39.7356,3.0563,15z, 07440 Muro',
+    });
+
+    expect(result).toContain(
+      '**Dirección:** [Finca Muro · 07440 Muro ↗](https://www.google.com/maps/place/Muro/@39.7356,3.0563,15z)',
+    );
+  });
+
+  it.each([
+    ['(https://maps.app.goo.gl/uukbAwPsPKZh5bYm7), 07440 Muro'],
+    ['https://maps.app.goo.gl/uukbAwPsPKZh5bYm7., 07440 Muro'],
+  ])('drops punctuation wrapped around a maps URL: %s', (addressMapQuery) => {
+    const result = syncDescriptionSection('', {
+      contactId: 'customer-1',
+      contactName: 'Cliente Uno',
+      addressLabel: 'Finca Muro',
+      addressMapQuery,
+    });
+
+    expect(result).toContain(
+      '**Dirección:** [Finca Muro · 07440 Muro ↗](https://maps.app.goo.gl/uukbAwPsPKZh5bYm7)',
+    );
+  });
+
   it('adds readable mobile actions and keeps the searchable tags at the end', () => {
     const result = syncDescriptionSection('Revisar medidas antes de empezar.', {
       contactId: 'customer-1',

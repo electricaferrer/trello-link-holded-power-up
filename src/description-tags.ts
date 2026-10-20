@@ -1,5 +1,6 @@
 import type { CardHoldedData } from './types';
 import { buildElectricaferrerEntityUrl } from './document-links';
+import { removeAddressUrls, splitAddressUrl } from './address-url';
 
 // `[\s\S]*?` (non-greedy, any char incl. newlines and braces) up to the first
 // closing `}}`, so tags whose value contains a brace — e.g. "Obra {Fase 2}" —
@@ -27,8 +28,6 @@ function escapeMarkdownLabel(value: string): string {
     .replace(/([\\[\]*_~`])/g, '\\$1');
 }
 
-const URL_IN_TEXT_REGEX = /https?:\/\/[^\s,]+/i;
-
 // Holded users often paste a Google Maps link into the address field. Searching
 // Google Maps for that URL finds nothing, so link straight to it and keep only
 // the remaining address text (or the address label) as the visible label.
@@ -36,19 +35,15 @@ function buildAddressLink(
   mapQuery: string,
   addressLabel: string | undefined,
 ): { label: string; url: string } {
-  const match = mapQuery.match(URL_IN_TEXT_REGEX);
-  if (match) {
-    try {
-      const url = new URL(match[0]).href.replace(/\(/g, '%28').replace(/\)/g, '%29');
-      const rest = mapQuery
-        .replace(match[0], '')
-        .replace(/^[\s,]+|[\s,]+$/g, '')
-        .replace(/\s*,\s*,\s*/g, ', ');
-      const label = [addressLabel?.trim(), rest].filter(Boolean).join(' · ') || 'Ver ubicación';
-      return { label, url };
-    } catch {
-      // Not a valid URL — fall through to a regular search.
-    }
+  const split = splitAddressUrl(mapQuery);
+  if (split) {
+    const label = [addressLabel?.trim(), removeAddressUrls(split.rest)]
+      .filter(Boolean)
+      .join(' · ');
+    return {
+      label: label || 'Ver ubicación',
+      url: split.url.replace(/\(/g, '%28').replace(/\)/g, '%29'),
+    };
   }
   return {
     label: mapQuery,
