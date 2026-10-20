@@ -1,5 +1,6 @@
 import type { CardHoldedData } from './types';
 import { buildElectricaferrerEntityUrl } from './document-links';
+import { removeAddressUrls, splitAddressUrl } from './address-url';
 
 // `[\s\S]*?` (non-greedy, any char incl. newlines and braces) up to the first
 // closing `}}`, so tags whose value contains a brace — e.g. "Obra {Fase 2}" —
@@ -25,6 +26,29 @@ function escapeMarkdownLabel(value: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/([\\[\]*_~`])/g, '\\$1');
+}
+
+// Holded users often paste a Google Maps link into the address field. Searching
+// Google Maps for that URL finds nothing, so link straight to it and keep only
+// the remaining address text (or the address label) as the visible label.
+function buildAddressLink(
+  mapQuery: string,
+  addressLabel: string | undefined,
+): { label: string; url: string } {
+  const split = splitAddressUrl(mapQuery);
+  if (split) {
+    const label = [addressLabel?.trim(), removeAddressUrls(split.rest)]
+      .filter(Boolean)
+      .join(' · ');
+    return {
+      label: label || 'Ver ubicación',
+      url: split.url.replace(/\(/g, '%28').replace(/\)/g, '%29'),
+    };
+  }
+  return {
+    label: mapQuery,
+    url: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(mapQuery)}`,
+  };
 }
 
 function stripGeneratedSection(desc: string): { description: string; found: boolean } {
@@ -112,9 +136,10 @@ export function syncDescriptionSection(desc: string, data: CardHoldedData): stri
     }
 
     if (addressMapQuery) {
+      const address = buildAddressLink(addressMapQuery, data.addressLabel);
       lines.push(
         '',
-        `**Dirección:** [${escapeMarkdownLabel(addressMapQuery)} ↗](https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addressMapQuery)})`
+        `**Dirección:** [${escapeMarkdownLabel(address.label)} ↗](${address.url})`
       );
     }
   }

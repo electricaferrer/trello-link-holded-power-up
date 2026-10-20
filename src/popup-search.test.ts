@@ -426,6 +426,32 @@ describe('address selection behavior', () => {
     dom.window.close();
   });
 
+  it('labels an unnamed shipping address by city when its address is a maps URL', async () => {
+    const { dom, trello } = installPopupDom('<div id="addresses"></div>');
+    trello.get.mockResolvedValue({
+      contactId: 'contact-1',
+      contactName: 'Cliente Uno',
+      billAddress: { address: '', city: '', postalCode: '', province: '' },
+      shippingAddresses: [{
+        name: '',
+        address: 'https://maps.app.goo.gl/uukbAwPsPKZh5bYm7',
+        city: 'Muro',
+        postalCode: '07440',
+        province: 'Illes Balears',
+        country: 'España',
+      }],
+    });
+
+    await import('./popups/select-address');
+
+    await vi.waitFor(() => {
+      expect(dom.window.document.querySelector('.address-item')).not.toBeNull();
+    });
+    expect(dom.window.document.querySelector('.address-name')?.textContent).toBe('Muro');
+
+    dom.window.close();
+  });
+
   it('renders CRM address fields as text instead of HTML', async () => {
     const { dom, trello } = installPopupDom('<div id="addresses"></div>');
     const unsafeName = '<img src=x onerror="alert(1)">Obra</img>';
@@ -606,6 +632,54 @@ describe('address selection behavior', () => {
     expect(description).toContain('{{ contact: Cliente Uno | Obra Nueva }}');
     const saved = trello.set.mock.calls.find((call) => call[2] === 'holdedData')?.[3];
     expect(saved.addressMapQuery).toBe('C/ Nou 3, 07003 Palma, Illes Balears, España');
+
+    dom.window.close();
+  });
+
+  it('keeps the exact casing of a maps URL typed as a new address', async () => {
+    const { dom, trello } = installPopupDom('<div id="addresses"></div>');
+    const pending = {
+      contactId: 'customer-1',
+      contactName: 'Cliente Uno',
+      billAddress: { address: '', city: '', postalCode: '', province: '' },
+      shippingAddresses: [],
+    };
+    trello.get
+      .mockResolvedValueOnce(pending)
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce(pending);
+    trello.card.mockResolvedValue({ id: 'card-1', desc: '' });
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await import('./popups/select-address');
+
+    await vi.waitFor(() => {
+      expect(dom.window.document.getElementById('create-addr-btn')).not.toBeNull();
+    });
+    dom.window.document.getElementById('create-addr-btn')!.click();
+
+    const values = {
+      'addr-name': 'Finca Muro',
+      'addr-address': ' https://maps.app.goo.gl/uukbawpsphzbybm7 ',
+      'addr-city': 'Muro',
+      'addr-postalCode': '07440',
+      'addr-province': 'Illes Balears',
+    };
+    for (const [id, value] of Object.entries(values)) {
+      (dom.window.document.getElementById(id) as HTMLInputElement).value = value;
+    }
+    dom.window.document.getElementById('create-form')!
+      .dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    (dom.window.document.getElementById('btn-create') as HTMLButtonElement).click();
+
+    await vi.waitFor(() => expect(trello.closePopup).toHaveBeenCalled());
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).address)
+      .toBe('https://maps.app.goo.gl/uukbawpsphzbybm7');
+    const description = JSON.parse(fetchImpl.mock.calls[1][1].body).desc;
+    expect(description).toContain(
+      '**Dirección:** [Finca Muro · 07440 Muro, Illes Balears, España ↗](https://maps.app.goo.gl/uukbawpsphzbybm7)'
+    );
 
     dom.window.close();
   });

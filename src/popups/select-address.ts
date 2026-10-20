@@ -5,6 +5,7 @@ import { addShippingAddress } from '../holded-api';
 import { createSubmissionKeyer } from '../idempotency';
 import { TRELLO_APP_KEY } from '../config';
 import { formatSpanishTextCase } from '../spanish-text-case';
+import { removeAddressUrls, splitAddressUrl } from '../address-url';
 import { getPendingContactSelection, removePendingContactSelection } from '../pending-contact';
 import type { PendingContactSelection, TrelloContext } from '../types';
 
@@ -45,7 +46,7 @@ function escapeHtml(value: string): string {
 
 function buildAddressLabel(address: string | null, city: string | null): string | undefined {
   return [
-    formatSpanishTextCase(address || ''),
+    formatSpanishTextCase(removeAddressUrls(address || '')),
     formatSpanishTextCase(city || ''),
   ].filter(Boolean).join(', ') || undefined;
 }
@@ -140,7 +141,10 @@ function showCreateForm(pending: PendingContactSelection) {
     try {
       const newAddr = {
         name: formatSpanishTextCase(nameInput.value),
-        address: formatSpanishTextCase(addressInput.value),
+        // Short-link IDs are case-sensitive, so keep pasted URLs untouched.
+        address: splitAddressUrl(addressInput.value)
+          ? addressInput.value.trim()
+          : formatSpanishTextCase(addressInput.value),
         city: formatSpanishTextCase(cityInput.value),
         postalCode: postalCodeInput.value.trim(),
         province: formatSpanishTextCase(provinceInput.value),
