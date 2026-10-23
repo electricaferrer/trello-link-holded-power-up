@@ -1940,6 +1940,15 @@ describe('card-back document view (internal API v2)', () => {
     expect(dom.window.document.querySelector('.create-contact-frame')).toBeNull();
   });
 
+  it('shows the create-contact form above the link selectors, below the toolbar', () => {
+    // Visual reorder only: the frame must stay outside #main so re-renders never reload it.
+    const cardBack = readFileSync(resolve(__dirname, '../public/card-back.html'), 'utf8');
+    expect(cardBack).toMatch(/#main\s*\{[^}]*display:\s*contents/);
+    expect(cardBack).toMatch(/#main > \.holded-toolbar\s*\{[^}]*order:\s*0/);
+    expect(cardBack).toMatch(/#create-contact-host\s*\{[^}]*order:\s*1/);
+    expect(cardBack).toMatch(/#main > \*\s*\{[^}]*order:\s*2/);
+  });
+
   it('lets the embedded create-contact form follow the Trello light/dark theme', () => {
     // A nested frame only sees prefers-color-scheme: dark when its owner element
     // declares color-scheme; both documents declare it so the frame stays transparent.

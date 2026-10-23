@@ -204,6 +204,13 @@
     .tag-add:active { transform: scale(0.98); }
     .tag-add:focus-visible { outline: 2px solid #388bff; outline-offset: 2px; }
     .tag-add .tag-icon { flex-shrink: 0; fill: currentColor; }
+    /* The create-contact host lives outside #main (re-rendering #main must not
+       reload its frame); flex order places it between the toolbar and the tags. */
+    #content { display: flex; flex-direction: column; }
+    #main { display: contents; }
+    #main > * { order: 2; }
+    #main > .holded-toolbar { order: 0; }
+    #create-contact-host { order: 1; }
     /* Inline create-contact section. Semantic tokens mirror Trello's light/dark
        palette; the dark values are swapped in the prefers-color-scheme block. */
     .create-contact {
@@ -216,7 +223,7 @@
       --create-contact-accent: #0c66e4;
       --create-contact-accent-hover: #0055cc;
       --create-contact-on-accent: #ffffff;
-      margin-top: 8px;
+      margin-bottom: 8px;
       border: 1px solid var(--create-contact-border);
       border-radius: 8px;
       overflow: hidden;
