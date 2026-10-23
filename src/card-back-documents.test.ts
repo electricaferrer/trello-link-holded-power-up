@@ -67,6 +67,7 @@ function loadCardBack(documents, options = {}) {
     projectId: options.projectId === null ? undefined : 'project-1',
     projectName: options.projectId === null ? undefined : 'Proyecto largo',
   };
+  const pluginData = { ...(options.pluginData || {}) };
 
   const dom = new JSDOM(html, {
     url: 'http://127.0.0.1/card-back.html',
@@ -134,7 +135,9 @@ function loadCardBack(documents, options = {}) {
       };
       window.TrelloPowerUp = {
         iframe: () => ({
-          get: () => Promise.resolve({ ...cardData }),
+          get: (_scope, _visibility, key) => Promise.resolve(
+            !key || key === 'holdedData' ? { ...cardData } : pluginData[key],
+          ),
           card: () => Promise.resolve({ id: 'card-1', desc: options.cardDesc || '' }),
           getRestApi: () => ({
             // Stateful: a token only exists once authorized. When options.authorized
@@ -144,7 +147,13 @@ function loadCardBack(documents, options = {}) {
             authorize: () => { authState.authorizeCalls += 1; restApiAuthorized = true; return Promise.resolve(); },
             getToken: () => Promise.resolve(restApiAuthorized ? (options.trelloToken || 'tok') : null),
           }),
-          set: (...args) => { setCalls.push(args); cardData = args[3]; return Promise.resolve(); },
+          set: (...args) => {
+            setCalls.push(args);
+            if (args[2] === 'holdedData') cardData = args[3];
+            else pluginData[args[2]] = args[3];
+            return Promise.resolve();
+          },
+          remove: (_scope, _visibility, key) => { delete pluginData[key]; return Promise.resolve(); },
           popup: (opts) => { popupCalls.push(opts); },
           closePopup: () => undefined,
           sizeTo: () => Promise.resolve(),
@@ -160,6 +169,7 @@ function loadCardBack(documents, options = {}) {
     requests,
     setCalls,
     popupCalls,
+    pluginData,
     authState,
     rerender: () => renderCallback?.(),
     runScheduledDocumentRefresh: () => {
@@ -1905,6 +1915,81 @@ describe('card-back document view (internal API v2)', () => {
     expect(popupCalls[1].url).toBe('./src/popups/search-project.html');
     expect(popupCalls[0].mouseEvent).toBeTruthy();
     expect(popupCalls[1].mouseEvent).toBeTruthy();
+  });
+
+  it('shows the create-contact form inside the card section so the card stays usable', async () => {
+    const { dom, pluginData, rerender } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      { contactId: null, projectId: null, pluginData: { holdedCreateContactOpen: true } },
+    );
+    await waitForRender();
+
+    const frame = dom.window.document.querySelector('.create-contact-frame');
+    expect(frame?.getAttribute('src')).toBe('./src/popups/create-contact.html?embedded=1');
+
+    // Re-renders (any card data change) must keep the same form so typed values survive.
+    rerender();
+    await waitForRender();
+    expect(dom.window.document.querySelector('.create-contact-frame')).toBe(frame);
+
+    dom.window.document.querySelector('.create-contact-cancel').click();
+    await waitForRender();
+    expect(pluginData.holdedCreateContactOpen).toBeUndefined();
+    rerender();
+    await waitForRender();
+    expect(dom.window.document.querySelector('.create-contact-frame')).toBeNull();
+  });
+
+  it('saves the created contact and opens the address popup from the card section', async () => {
+    const { dom, pluginData, popupCalls } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      { contactId: null, projectId: null, pluginData: { holdedCreateContactOpen: true } },
+    );
+    await waitForRender();
+
+    const frame = dom.window.document.querySelector('.create-contact-frame');
+    const pending = {
+      contactId: 'contact-9',
+      contactName: 'Cliente Nuevo',
+      billAddress: { address: 'C/ Major 1', city: 'Palma', postalCode: '07001', province: 'Illes Balears', country: 'España' },
+      shippingAddresses: [],
+    };
+    dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data: { type: 'holded:contact-created', pending },
+      origin: dom.window.location.origin,
+      source: frame.contentWindow,
+    }));
+    await waitForRender();
+
+    expect(JSON.parse(dom.window.localStorage.getItem('holdedPendingContact:card-1'))).toEqual(pending);
+    expect(pluginData.holdedPendingContact).toEqual({ localStorageKey: 'holdedPendingContact:card-1' });
+    expect(dom.window.document.querySelector('.create-contact-frame')).toBeNull();
+    const chooseAddress = dom.window.document.querySelector('.create-contact-address');
+    expect(chooseAddress?.textContent).toContain('Elegir dirección');
+
+    chooseAddress.click();
+    expect(popupCalls).toContainEqual(expect.objectContaining({
+      title: 'Seleccionar dirección',
+      url: './src/popups/select-address.html',
+    }));
+    expect(popupCalls.at(-1).mouseEvent).toBeTruthy();
+  });
+
+  it('ignores contact-created messages that do not come from the embedded form', async () => {
+    const { dom } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      { contactId: null, projectId: null, pluginData: { holdedCreateContactOpen: true } },
+    );
+    await waitForRender();
+
+    dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data: { type: 'holded:contact-created', pending: { contactId: 'x', contactName: 'X' } },
+      origin: 'https://evil.example',
+    }));
+    await waitForRender();
+
+    expect(dom.window.localStorage.getItem('holdedPendingContact:card-1')).toBeNull();
+    expect(dom.window.document.querySelector('.create-contact-frame')).not.toBeNull();
   });
 
   it('shows the client chip alongside the project placeholder when only the contact is linked', async () => {

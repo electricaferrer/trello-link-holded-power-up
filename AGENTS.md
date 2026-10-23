@@ -87,6 +87,13 @@ Linking is done from the **always-visible "Vincula un cliente/proyecto" placehol
 card-back section (they open the same search popups). There is intentionally **no `card-buttons`
 capability** — the placeholders replaced it.
 
+**Creating a contact** ("+ Crear contacto nuevo" in the search popup) sets the card-private
+`holdedCreateContactOpen` flag and closes the popup; the card-back then shows
+`create-contact.html?embedded=1` in a frame **inline in the section**, so the card stays usable
+(popups close on blur and modals block the card). The embedded form `postMessage`s the created
+contact to the card-back, which saves the pending selection and offers "Elegir dirección" → the
+usual `select-address` popup (which writes the description).
+
 ## Managed description suffix
 
 When linking a contact/project, `syncDescriptionSection` maintains a generated **Cliente y proyecto**

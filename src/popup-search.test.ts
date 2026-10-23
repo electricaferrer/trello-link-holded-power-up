@@ -72,24 +72,20 @@ describe('popup search behavior', () => {
     dom.window.close();
   });
 
-  it('forwards the create-contact click event when opening its popup', async () => {
+  it('opens contact creation inside the card section instead of a popup', async () => {
     const { dom, trello } = installPopupDom(`
       <input id="search" />
       <div id="results"></div>
     `);
+    trello.set.mockResolvedValue(undefined);
 
     await import('./popups/search-contact');
 
-    const createButton = dom.window.document.getElementById('create-contact-btn')!;
-    const clickEvent = new dom.window.MouseEvent('click', { bubbles: true });
-    createButton.dispatchEvent(clickEvent);
+    dom.window.document.getElementById('create-contact-btn')!.click();
 
-    expect(trello.popup).toHaveBeenCalledWith({
-      title: 'Crear contacto',
-      url: './create-contact.html',
-      height: 420,
-      mouseEvent: clickEvent,
-    });
+    await vi.waitFor(() => expect(trello.closePopup).toHaveBeenCalled());
+    expect(trello.set).toHaveBeenCalledWith('card', 'private', 'holdedCreateContactOpen', true);
+    expect(trello.popup).not.toHaveBeenCalled();
 
     dom.window.close();
   });
@@ -284,6 +280,77 @@ describe('popup search behavior', () => {
     dom.window.close();
   });
 
+  it('hands the created contact to the card section when embedded', async () => {
+    const { dom, trello } = installPopupDom(`
+      <div id="form">
+        <input id="name" />
+        <input id="code" />
+        <input id="address" />
+        <input id="city" />
+        <input id="postalCode" />
+        <input id="province" />
+        <input id="country" />
+        <input id="email" />
+        <input id="phone" />
+        <div id="type-toggle">
+          <button type="button" data-value="empresa">Empresa</button>
+          <button type="button" data-value="persona">Persona</button>
+        </div>
+        <button type="button" id="submit-btn">Crear contacto</button>
+        <div id="code-duplicate-msg"></div>
+        <div id="error-msg"></div>
+      </div>
+    `);
+    dom.reconfigure({ url: 'https://power-up.test/create-contact.html?embedded=1' });
+    const postMessage = vi.spyOn(dom.window.parent, 'postMessage').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'contact-1',
+    }))));
+
+    await import('./popups/create-contact');
+
+    const values = {
+      name: 'Cliente Uno',
+      code: 'B12345678',
+      address: 'C/ Major 1',
+      city: 'Palma',
+      postalCode: '07001',
+      province: 'Illes Balears',
+      country: 'España',
+      email: 'cliente@example.com',
+    };
+    for (const [id, value] of Object.entries(values)) {
+      (dom.window.document.getElementById(id) as HTMLInputElement).value = value;
+    }
+    dom.window.document.querySelector<HTMLButtonElement>('[data-value="empresa"]')!.click();
+
+    const submit = dom.window.document.getElementById('submit-btn') as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    const clickEvent = new dom.window.MouseEvent('click', { bubbles: true });
+    submit.dispatchEvent(clickEvent);
+
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalled());
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'holded:contact-created',
+      pending: {
+        contactId: 'contact-1',
+        contactName: 'Cliente Uno',
+        email: 'cliente@example.com',
+        billAddress: {
+          address: 'C/ Major 1',
+          city: 'Palma',
+          postalCode: '07001',
+          province: 'Illes Balears',
+          country: 'España',
+        },
+        shippingAddresses: [],
+      },
+    }, 'https://power-up.test');
+    expect(trello.popup).not.toHaveBeenCalled();
+    expect(trello.set).not.toHaveBeenCalled();
+
+    dom.window.close();
+  });
   it('shows both the linked client and project code in project results', async () => {
     const { dom } = installPopupDom(`
       <input id="search" />
