@@ -5,12 +5,27 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Crear contacto</title>
   <style>
+    :root {
+      color-scheme: light dark;
+      --cc-text: #172b4d;
+      --cc-border: #091e4224;
+      --cc-border-strong: #091e4240;
+      --cc-divider: #091e420f;
+      --cc-input-bg: #ffffff;
+      --cc-accent: #0079bf;
+      --cc-accent-hover: #026aa7;
+      --cc-on-accent: #ffffff;
+      --cc-muted: #626f86;
+      --cc-danger: #ae2e24;
+      --cc-danger-bg: #ffeceb;
+      --cc-disabled-bg: #091e4224;
+    }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       margin: 0;
       padding: 8px;
       background: transparent;
-      color: #172b4d;
+      color: var(--cc-text);
     }
     .form-grid {
       display: flex;
@@ -26,7 +41,7 @@
       display: block;
       font-size: 11px;
       font-weight: 600;
-      color: #626f86;
+      color: var(--cc-muted);
       margin-bottom: 2px;
       text-transform: uppercase;
       letter-spacing: 0.04em;
@@ -34,25 +49,25 @@
     input, select {
       width: 100%;
       padding: 6px 8px;
-      border: 1px solid #091e4224;
+      border: 1px solid var(--cc-border);
       border-radius: 3px;
       font-size: 14px;
       box-sizing: border-box;
-      background: #fff;
+      background: var(--cc-input-bg);
       color: inherit;
       outline: none;
       transition: border-color 0.2s;
     }
     input:focus, select:focus {
-      border-color: #0079bf;
+      border-color: var(--cc-accent);
     }
-    input::placeholder { color: #626f86; }
-    .required input, .required select { border-color: #091e4240; }
-    .required-one input { border-color: #091e4240; }
-    input.invalid { border-color: #ae2e24; }
+    input::placeholder { color: var(--cc-muted); }
+    .required input, .required select { border-color: var(--cc-border-strong); }
+    .required-one input { border-color: var(--cc-border-strong); }
+    input.invalid { border-color: var(--cc-danger); }
     .duplicate-msg {
       font-size: 11px;
-      color: #ae2e24;
+      color: var(--cc-danger);
       margin-top: 2px;
       display: none;
     }
@@ -60,7 +75,7 @@
       display: flex;
       border-radius: 3px;
       overflow: hidden;
-      border: 1px solid #091e4224;
+      border: 1px solid var(--cc-border);
     }
     .toggle-group button {
       flex: 1;
@@ -69,22 +84,22 @@
       background: transparent;
       font-size: 13px;
       cursor: pointer;
-      color: #626f86;
+      color: var(--cc-muted);
       transition: background 0.1s, color 0.1s;
     }
     .toggle-group button.active {
-      background: #0079bf;
-      color: #fff;
+      background: var(--cc-accent);
+      color: var(--cc-on-accent);
     }
     .section-title {
       font-size: 11px;
       font-weight: 600;
-      color: #626f86;
+      color: var(--cc-muted);
       text-transform: uppercase;
       letter-spacing: 0.04em;
       margin-top: 6px;
       padding-bottom: 2px;
-      border-bottom: 1px solid #091e420f;
+      border-bottom: 1px solid var(--cc-divider);
     }
     .submit-btn {
       width: 100%;
@@ -92,51 +107,44 @@
       margin-top: 8px;
       border: none;
       border-radius: 3px;
-      background: #0079bf;
-      color: #fff;
+      background: var(--cc-accent);
+      color: var(--cc-on-accent);
       font-size: 14px;
       font-weight: 600;
       cursor: pointer;
       transition: background 0.1s;
     }
-    .submit-btn:hover { background: #026aa7; }
+    .submit-btn:hover { background: var(--cc-accent-hover); }
     .submit-btn:disabled {
-      background: #091e4224;
-      color: #626f86;
+      background: var(--cc-disabled-bg);
+      color: var(--cc-muted);
       cursor: not-allowed;
     }
     .error-msg {
       margin-top: 6px;
       padding: 6px 8px;
-      background: #ffeceb;
-      color: #ae2e24;
+      background: var(--cc-danger-bg);
+      color: var(--cc-danger);
       border-radius: 3px;
       font-size: 13px;
       display: none;
     }
 
     @media (prefers-color-scheme: dark) {
-      body { color: #b6c2cf; }
-      input, select {
-        background: #22272b;
-        color: #b6c2cf;
-        border-color: #a6c5e229;
+      :root {
+        --cc-text: #b6c2cf;
+        --cc-border: #a6c5e229;
+        --cc-border-strong: #a6c5e240;
+        --cc-divider: #a6c5e229;
+        --cc-input-bg: #22272b;
+        --cc-accent: #579dff;
+        --cc-accent-hover: #85b8ff;
+        --cc-on-accent: #1d2125;
+        --cc-muted: #8c9bab;
+        --cc-danger: #f87168;
+        --cc-danger-bg: #42221f;
+        --cc-disabled-bg: #a6c5e229;
       }
-      input:focus, select:focus { border-color: #579dff; }
-      input::placeholder { color: #8c9bab; }
-      .required input, .required select { border-color: #a6c5e240; }
-      .required-one input { border-color: #a6c5e240; }
-      input.invalid { border-color: #f87168; }
-      .duplicate-msg { color: #f87168; }
-      label { color: #8c9bab; }
-      .section-title { color: #8c9bab; border-bottom-color: #a6c5e229; }
-      .toggle-group { border-color: #a6c5e229; }
-      .toggle-group button { color: #8c9bab; }
-      .toggle-group button.active { background: #579dff; color: #1d2125; }
-      .submit-btn { background: #579dff; color: #1d2125; }
-      .submit-btn:hover { background: #85b8ff; }
-      .submit-btn:disabled { background: #a6c5e229; color: #8c9bab; }
-      .error-msg { background: #42221f; color: #f87168; }
     }
   </style>
   <script src="https://p.trellocdn.com/power-up.min.js"></script>

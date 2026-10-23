@@ -18,7 +18,7 @@ if (embedded && 'ResizeObserver' in window) {
   // Let the card-back size the frame to the form (errors/duplicate notes change it).
   new ResizeObserver(() => {
     window.parent.postMessage(
-      { type: 'holded:contact-form-height', height: document.documentElement.scrollHeight },
+      { type: 'holded:contact-form-height', height: document.body.getBoundingClientRect().height },
       window.location.origin,
     );
   }).observe(document.body);

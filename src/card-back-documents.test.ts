@@ -1940,6 +1940,15 @@ describe('card-back document view (internal API v2)', () => {
     expect(dom.window.document.querySelector('.create-contact-frame')).toBeNull();
   });
 
+  it('lets the embedded create-contact form follow the Trello light/dark theme', () => {
+    // A nested frame only sees prefers-color-scheme: dark when its owner element
+    // declares color-scheme; both documents declare it so the frame stays transparent.
+    const cardBack = readFileSync(resolve(__dirname, '../public/card-back.html'), 'utf8');
+    const form = readFileSync(resolve(__dirname, 'popups/create-contact.html'), 'utf8');
+    expect(cardBack).toMatch(/\.create-contact-frame\s*\{[^}]*color-scheme:\s*light dark/);
+    expect(form).toMatch(/:root\s*\{[^}]*color-scheme:\s*light dark/);
+  });
+
   it('saves the created contact and opens the address popup from the card section', async () => {
     const { dom, pluginData, popupCalls } = loadCardBack(
       { salesOrders: [], waybills: [], estimates: [] },
