@@ -201,6 +201,8 @@ export interface TrelloContext {
     mouseEvent?: MouseEvent;
   }): void;
   closePopup(): void;
+  modal(options: { title: string; url: string; height?: number }): void;
+  closeModal(): void;
   sizeTo(selector: string | HTMLElement): Promise<void>;
   arg(name: string, defaultValue?: string): string;
   signUrl(url: string): string;

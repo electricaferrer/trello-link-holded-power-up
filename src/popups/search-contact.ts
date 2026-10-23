@@ -22,12 +22,12 @@ function showSelectionError(message: string) {
 function addCreateButton() {
   resultsDiv.insertAdjacentHTML('beforeend',
     '<button class="create-btn" id="create-contact-btn">+ Crear contacto nuevo</button>');
-  document.getElementById('create-contact-btn')!.addEventListener('click', (event) => {
-    t.popup({
+  document.getElementById('create-contact-btn')!.addEventListener('click', () => {
+    // A modal, unlike a popup, stays open when the user switches tabs to copy data.
+    t.modal({
       title: 'Crear contacto',
       url: './create-contact.html',
-      height: 420,
-      mouseEvent: event,
+      height: 520,
     });
   });
 }

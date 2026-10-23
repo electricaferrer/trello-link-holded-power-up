@@ -7,6 +7,8 @@ function installPopupDom(markup: string) {
   const trello = {
     popup: vi.fn(),
     closePopup: vi.fn(),
+    modal: vi.fn(),
+    closeModal: vi.fn(),
     get: vi.fn(),
     set: vi.fn(),
     remove: vi.fn(),
@@ -72,7 +74,7 @@ describe('popup search behavior', () => {
     dom.window.close();
   });
 
-  it('forwards the create-contact click event when opening its popup', async () => {
+  it('opens contact creation in a modal so it survives switching tabs', async () => {
     const { dom, trello } = installPopupDom(`
       <input id="search" />
       <div id="results"></div>
@@ -84,12 +86,12 @@ describe('popup search behavior', () => {
     const clickEvent = new dom.window.MouseEvent('click', { bubbles: true });
     createButton.dispatchEvent(clickEvent);
 
-    expect(trello.popup).toHaveBeenCalledWith({
+    expect(trello.modal).toHaveBeenCalledWith({
       title: 'Crear contacto',
       url: './create-contact.html',
-      height: 420,
-      mouseEvent: clickEvent,
+      height: 520,
     });
+    expect(trello.popup).not.toHaveBeenCalled();
 
     dom.window.close();
   });
@@ -259,14 +261,13 @@ describe('popup search behavior', () => {
     submit.dispatchEvent(clickEvent);
 
     await vi.waitFor(() => {
-      expect(trello.popup).toHaveBeenCalledWith({
+      expect(trello.modal).toHaveBeenCalledWith({
         title: 'Seleccionar dirección',
-        url: './select-address.html',
-        height: 300,
-        mouseEvent: clickEvent,
+        url: './select-address.html?context=modal',
+        height: 360,
       });
     });
-    expect(trello.closePopup).not.toHaveBeenCalled();
+    expect(trello.closeModal).not.toHaveBeenCalled();
     expect(JSON.parse(dom.window.localStorage.getItem('holdedPendingContact:card-1'))).toEqual({
       contactId: 'contact-1',
       contactName: 'Cliente Uno',
@@ -632,6 +633,32 @@ describe('address selection behavior', () => {
     expect(description).toContain('{{ contact: Cliente Uno | Obra Nueva }}');
     const saved = trello.set.mock.calls.find((call) => call[2] === 'holdedData')?.[3];
     expect(saved.addressMapQuery).toBe('C/ Nou 3, 07003 Palma, Illes Balears, España');
+
+    dom.window.close();
+  });
+
+  it('closes the modal instead of a popup when opened after creating a contact', async () => {
+    const { dom, trello } = installPopupDom('<div id="addresses"></div>');
+    dom.reconfigure({ url: 'https://power-up.test/select-address.html?context=modal' });
+    const pending = {
+      contactId: 'contact-1',
+      contactName: 'Cliente Uno',
+      billAddress: { address: 'C/ Major 1', city: 'Palma', postalCode: '07001', province: '' },
+      shippingAddresses: [],
+    };
+    trello.get.mockResolvedValueOnce(pending).mockResolvedValueOnce({});
+    trello.card.mockResolvedValue({ id: 'card-1', desc: '' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 200 })));
+
+    await import('./popups/select-address');
+
+    await vi.waitFor(() => {
+      expect(dom.window.document.querySelector('.address-item')).not.toBeNull();
+    });
+    (dom.window.document.querySelector('.address-item') as HTMLElement).click();
+
+    await vi.waitFor(() => expect(trello.closeModal).toHaveBeenCalled());
+    expect(trello.closePopup).not.toHaveBeenCalled();
 
     dom.window.close();
   });

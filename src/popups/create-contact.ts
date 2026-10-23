@@ -119,7 +119,7 @@ document.getElementById('form')!.addEventListener('input', updateSubmitState);
 // Initial state
 submitBtn.disabled = true;
 
-submitBtn.addEventListener('click', async (event) => {
+submitBtn.addEventListener('click', async () => {
   if (!validateForm() || isperson === null) return;
 
   submitBtn.disabled = true;
@@ -167,11 +167,10 @@ submitBtn.addEventListener('click', async (event) => {
     });
 
     submissionKeyer.reset(); // workflow complete — a later create starts a fresh key
-    t.popup({
+    t.modal({
       title: 'Seleccionar dirección',
-      url: './select-address.html',
-      height: 300,
-      mouseEvent: event,
+      url: './select-address.html?context=modal',
+      height: 360,
     });
   } catch (err) {
     errorMsg.textContent = (err as Error).message;

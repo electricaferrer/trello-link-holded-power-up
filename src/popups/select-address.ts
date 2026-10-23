@@ -11,6 +11,7 @@ import type { PendingContactSelection, TrelloContext } from '../types';
 
 const t = window.TrelloPowerUp.iframe({ appKey: TRELLO_APP_KEY, appName: 'Holded' }) as unknown as TrelloContext;
 const addressesDiv = document.getElementById('addresses') as HTMLDivElement;
+const openedInModal = new URLSearchParams(window.location.search).get('context') === 'modal';
 
 const submissionKeyer = createSubmissionKeyer();
 
@@ -73,7 +74,8 @@ async function selectAddress(
   } catch (err) { console.error('Holded: error syncing description', err); }
 
   await removePendingContactSelection(t);
-  t.closePopup();
+  if (openedInModal) t.closeModal();
+  else t.closePopup();
 }
 
 function showCreateForm(pending: PendingContactSelection) {
