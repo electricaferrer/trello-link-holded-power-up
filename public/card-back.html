@@ -2934,18 +2934,22 @@
             '<span><strong>' + escapeHtml(createdContactName) + '</strong> ya está en Holded. Elige su dirección para vincularlo a la tarjeta.</span>' +
             '<button type="button" class="create-contact-address">Elegir dirección</button>' +
           '</div>');
-        createContactHost.querySelector('.create-contact-address').addEventListener('click', function(e) {
-          t.popup({
-            title: 'Seleccionar dirección',
-            url: './src/popups/select-address.html',
-            height: 300,
-            mouseEvent: e,
-          });
-        });
+        createContactHost.querySelector('.create-contact-address').addEventListener('click', openAddressPopup);
         return;
       }
       renderCreateContactShell('Crear contacto',
         '<iframe class="create-contact-frame" title="Crear contacto" src="./src/popups/create-contact.html?embedded=1"></iframe>');
+    }
+
+    // t.popup only reads clientX/clientY from mouseEvent to anchor the popup, so a
+    // point is enough to open it straight after the embedded form's submit click.
+    function openAddressPopup(mouseEvent) {
+      t.popup({
+        title: 'Seleccionar dirección',
+        url: './src/popups/select-address.html',
+        height: 300,
+        mouseEvent: mouseEvent,
+      });
     }
 
     // Mirrors savePendingContactSelection (src/pending-contact.ts) for the address popup.
@@ -2970,7 +2974,14 @@
         t.sizeTo(contentDiv).catch(function() {});
       }
       if (message.type === 'holded:contact-created' && message.pending) {
+        var frameRect = frame.getBoundingClientRect();
+        var anchor = message.anchor || {};
+        var point = {
+          clientX: Math.round(frameRect.left + (Number(anchor.x) || 0)),
+          clientY: Math.round(frameRect.top + (Number(anchor.y) || 0)),
+        };
         savePendingContact(message.pending).then(function() {
+          openAddressPopup(point);
           createdContactName = message.pending.contactName || '';
           createContactHost.innerHTML = '';
           renderCreateContact(true, {});

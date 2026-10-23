@@ -332,6 +332,7 @@ describe('popup search behavior', () => {
     await vi.waitFor(() => expect(postMessage).toHaveBeenCalled());
     expect(postMessage).toHaveBeenCalledWith({
       type: 'holded:contact-created',
+      anchor: { x: expect.any(Number), y: expect.any(Number) },
       pending: {
         contactId: 'contact-1',
         contactName: 'Cliente Uno',

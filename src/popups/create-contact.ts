@@ -183,7 +183,12 @@ submitBtn.addEventListener('click', async (event) => {
 
     if (!t) {
       submissionKeyer.reset();
-      window.parent.postMessage({ type: 'holded:contact-created', pending }, window.location.origin);
+      // The card-back opens the address popup anchored under the submit button.
+      const rect = submitBtn.getBoundingClientRect();
+      window.parent.postMessage(
+        { type: 'holded:contact-created', pending, anchor: { x: rect.left, y: rect.bottom } },
+        window.location.origin,
+      );
       return;
     }
 

@@ -91,8 +91,10 @@ capability** — the placeholders replaced it.
 `holdedCreateContactOpen` flag and closes the popup; the card-back then shows
 `create-contact.html?embedded=1` in a frame **inline in the section**, so the card stays usable
 (popups close on blur and modals block the card). The embedded form `postMessage`s the created
-contact to the card-back, which saves the pending selection and offers "Elegir dirección" → the
-usual `select-address` popup (which writes the description).
+contact (plus the submit button position) to the card-back, which saves the pending selection and
+opens the usual `select-address` popup (which writes the description) anchored on that point —
+`t.popup` only reads `clientX`/`clientY` from `mouseEvent`. An "Elegir dirección" button stays as a
+fallback if the popup is dismissed.
 
 ## Managed description suffix
 

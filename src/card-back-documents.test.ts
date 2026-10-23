@@ -1949,7 +1949,7 @@ describe('card-back document view (internal API v2)', () => {
     expect(form).toMatch(/:root\s*\{[^}]*color-scheme:\s*light dark/);
   });
 
-  it('saves the created contact and opens the address popup from the card section', async () => {
+  it('opens address selection right after the embedded form creates the contact', async () => {
     const { dom, pluginData, popupCalls } = loadCardBack(
       { salesOrders: [], waybills: [], estimates: [] },
       { contactId: null, projectId: null, pluginData: { holdedCreateContactOpen: true } },
@@ -1964,11 +1964,19 @@ describe('card-back document view (internal API v2)', () => {
       shippingAddresses: [],
     };
     dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
-      data: { type: 'holded:contact-created', pending },
+      data: { type: 'holded:contact-created', pending, anchor: { x: 120, y: 340 } },
       origin: dom.window.location.origin,
       source: frame.contentWindow,
     }));
     await waitForRender();
+
+    // Anchored on the form's submit button (frame offset + button position).
+    expect(popupCalls).toHaveLength(1);
+    expect(popupCalls[0]).toEqual(expect.objectContaining({
+      title: 'Seleccionar dirección',
+      url: './src/popups/select-address.html',
+    }));
+    expect(popupCalls[0].mouseEvent).toEqual({ clientX: 120, clientY: 340 });
 
     expect(JSON.parse(dom.window.localStorage.getItem('holdedPendingContact:card-1'))).toEqual(pending);
     expect(pluginData.holdedPendingContact).toEqual({ localStorageKey: 'holdedPendingContact:card-1' });
@@ -1976,7 +1984,9 @@ describe('card-back document view (internal API v2)', () => {
     const chooseAddress = dom.window.document.querySelector('.create-contact-address');
     expect(chooseAddress?.textContent).toContain('Elegir dirección');
 
+    // Fallback if the popup was dismissed.
     chooseAddress.click();
+    expect(popupCalls).toHaveLength(2);
     expect(popupCalls).toContainEqual(expect.objectContaining({
       title: 'Seleccionar dirección',
       url: './src/popups/select-address.html',
