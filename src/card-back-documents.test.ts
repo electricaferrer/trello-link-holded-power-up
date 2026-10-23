@@ -67,6 +67,7 @@ function loadCardBack(documents, options = {}) {
     projectId: options.projectId === null ? undefined : 'project-1',
     projectName: options.projectId === null ? undefined : 'Proyecto largo',
   };
+  const pluginData = { ...(options.pluginData || {}) };
 
   const dom = new JSDOM(html, {
     url: 'http://127.0.0.1/card-back.html',
@@ -134,7 +135,9 @@ function loadCardBack(documents, options = {}) {
       };
       window.TrelloPowerUp = {
         iframe: () => ({
-          get: () => Promise.resolve({ ...cardData }),
+          get: (_scope, _visibility, key) => Promise.resolve(
+            !key || key === 'holdedData' ? { ...cardData } : pluginData[key],
+          ),
           card: () => Promise.resolve({ id: 'card-1', desc: options.cardDesc || '' }),
           getRestApi: () => ({
             // Stateful: a token only exists once authorized. When options.authorized
@@ -144,7 +147,13 @@ function loadCardBack(documents, options = {}) {
             authorize: () => { authState.authorizeCalls += 1; restApiAuthorized = true; return Promise.resolve(); },
             getToken: () => Promise.resolve(restApiAuthorized ? (options.trelloToken || 'tok') : null),
           }),
-          set: (...args) => { setCalls.push(args); cardData = args[3]; return Promise.resolve(); },
+          set: (...args) => {
+            setCalls.push(args);
+            if (args[2] === 'holdedData') cardData = args[3];
+            else pluginData[args[2]] = args[3];
+            return Promise.resolve();
+          },
+          remove: (_scope, _visibility, key) => { delete pluginData[key]; return Promise.resolve(); },
           popup: (opts) => { popupCalls.push(opts); },
           closePopup: () => undefined,
           sizeTo: () => Promise.resolve(),
@@ -160,6 +169,7 @@ function loadCardBack(documents, options = {}) {
     requests,
     setCalls,
     popupCalls,
+    pluginData,
     authState,
     rerender: () => renderCallback?.(),
     runScheduledDocumentRefresh: () => {
@@ -1905,6 +1915,109 @@ describe('card-back document view (internal API v2)', () => {
     expect(popupCalls[1].url).toBe('./src/popups/search-project.html');
     expect(popupCalls[0].mouseEvent).toBeTruthy();
     expect(popupCalls[1].mouseEvent).toBeTruthy();
+  });
+
+  it('shows the create-contact form inside the card section so the card stays usable', async () => {
+    const { dom, pluginData, rerender } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      { contactId: null, projectId: null, pluginData: { holdedCreateContactOpen: true } },
+    );
+    await waitForRender();
+
+    const frame = dom.window.document.querySelector('.create-contact-frame');
+    expect(frame?.getAttribute('src')).toBe('./src/popups/create-contact.html?embedded=1');
+
+    // Re-renders (any card data change) must keep the same form so typed values survive.
+    rerender();
+    await waitForRender();
+    expect(dom.window.document.querySelector('.create-contact-frame')).toBe(frame);
+
+    dom.window.document.querySelector('.create-contact-cancel').click();
+    await waitForRender();
+    expect(pluginData.holdedCreateContactOpen).toBeUndefined();
+    rerender();
+    await waitForRender();
+    expect(dom.window.document.querySelector('.create-contact-frame')).toBeNull();
+  });
+
+  it('shows the create-contact form above the link selectors, below the toolbar', () => {
+    // Visual reorder only: the frame must stay outside #main so re-renders never reload it.
+    const cardBack = readFileSync(resolve(__dirname, '../public/card-back.html'), 'utf8');
+    expect(cardBack).toMatch(/#main\s*\{[^}]*display:\s*contents/);
+    expect(cardBack).toMatch(/#main > \.holded-toolbar\s*\{[^}]*order:\s*0/);
+    expect(cardBack).toMatch(/#create-contact-host\s*\{[^}]*order:\s*1/);
+    expect(cardBack).toMatch(/#main > \*\s*\{[^}]*order:\s*2/);
+  });
+
+  it('lets the embedded create-contact form follow the Trello light/dark theme', () => {
+    // A nested frame only sees prefers-color-scheme: dark when its owner element
+    // declares color-scheme; both documents declare it so the frame stays transparent.
+    const cardBack = readFileSync(resolve(__dirname, '../public/card-back.html'), 'utf8');
+    const form = readFileSync(resolve(__dirname, 'popups/create-contact.html'), 'utf8');
+    expect(cardBack).toMatch(/\.create-contact-frame\s*\{[^}]*color-scheme:\s*light dark/);
+    expect(form).toMatch(/:root\s*\{[^}]*color-scheme:\s*light dark/);
+  });
+
+  it('opens address selection right after the embedded form creates the contact', async () => {
+    const { dom, pluginData, popupCalls } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      { contactId: null, projectId: null, pluginData: { holdedCreateContactOpen: true } },
+    );
+    await waitForRender();
+
+    const frame = dom.window.document.querySelector('.create-contact-frame');
+    const pending = {
+      contactId: 'contact-9',
+      contactName: 'Cliente Nuevo',
+      billAddress: { address: 'C/ Major 1', city: 'Palma', postalCode: '07001', province: 'Illes Balears', country: 'España' },
+      shippingAddresses: [],
+    };
+    dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data: { type: 'holded:contact-created', pending, anchor: { x: 120, y: 340 } },
+      origin: dom.window.location.origin,
+      source: frame.contentWindow,
+    }));
+    await waitForRender();
+
+    // Anchored on the form's submit button (frame offset + button position).
+    expect(popupCalls).toHaveLength(1);
+    expect(popupCalls[0]).toEqual(expect.objectContaining({
+      title: 'Seleccionar dirección',
+      url: './src/popups/select-address.html',
+    }));
+    expect(popupCalls[0].mouseEvent).toEqual({ clientX: 120, clientY: 340 });
+
+    expect(JSON.parse(dom.window.localStorage.getItem('holdedPendingContact:card-1'))).toEqual(pending);
+    expect(pluginData.holdedPendingContact).toEqual({ localStorageKey: 'holdedPendingContact:card-1' });
+    expect(dom.window.document.querySelector('.create-contact-frame')).toBeNull();
+    const chooseAddress = dom.window.document.querySelector('.create-contact-address');
+    expect(chooseAddress?.textContent).toContain('Elegir dirección');
+
+    // Fallback if the popup was dismissed.
+    chooseAddress.click();
+    expect(popupCalls).toHaveLength(2);
+    expect(popupCalls).toContainEqual(expect.objectContaining({
+      title: 'Seleccionar dirección',
+      url: './src/popups/select-address.html',
+    }));
+    expect(popupCalls.at(-1).mouseEvent).toBeTruthy();
+  });
+
+  it('ignores contact-created messages that do not come from the embedded form', async () => {
+    const { dom } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      { contactId: null, projectId: null, pluginData: { holdedCreateContactOpen: true } },
+    );
+    await waitForRender();
+
+    dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data: { type: 'holded:contact-created', pending: { contactId: 'x', contactName: 'X' } },
+      origin: 'https://evil.example',
+    }));
+    await waitForRender();
+
+    expect(dom.window.localStorage.getItem('holdedPendingContact:card-1')).toBeNull();
+    expect(dom.window.document.querySelector('.create-contact-frame')).not.toBeNull();
   });
 
   it('shows the client chip alongside the project placeholder when only the contact is linked', async () => {

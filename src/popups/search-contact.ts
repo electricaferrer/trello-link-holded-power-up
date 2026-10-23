@@ -22,13 +22,11 @@ function showSelectionError(message: string) {
 function addCreateButton() {
   resultsDiv.insertAdjacentHTML('beforeend',
     '<button class="create-btn" id="create-contact-btn">+ Crear contacto nuevo</button>');
-  document.getElementById('create-contact-btn')!.addEventListener('click', (event) => {
-    t.popup({
-      title: 'Crear contacto',
-      url: './create-contact.html',
-      height: 420,
-      mouseEvent: event,
-    });
+  document.getElementById('create-contact-btn')!.addEventListener('click', async () => {
+    // Popups close on blur, so the card-back section renders the form inline
+    // where the card stays usable for copying data into it.
+    await t.set('card', 'private', 'holdedCreateContactOpen', true);
+    t.closePopup();
   });
 }
 

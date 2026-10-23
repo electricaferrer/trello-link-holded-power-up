@@ -5,9 +5,24 @@ import { formatSpanishTextCase } from '../spanish-text-case';
 import { savePendingContactSelection } from '../pending-contact';
 import type { TrelloContext } from '../types';
 
-const t = window.TrelloPowerUp.iframe({ appKey: TRELLO_APP_KEY, appName: 'Holded' }) as unknown as TrelloContext;
+// Embedded in the card-back section, which owns the Trello context: this frame
+// only creates the contact and hands it back to its parent.
+const embedded = new URLSearchParams(window.location.search).get('embedded') === '1';
+const t = embedded
+  ? null
+  : window.TrelloPowerUp.iframe({ appKey: TRELLO_APP_KEY, appName: 'Holded' }) as unknown as TrelloContext;
 
 const submissionKeyer = createSubmissionKeyer();
+
+if (embedded && 'ResizeObserver' in window) {
+  // Let the card-back size the frame to the form (errors/duplicate notes change it).
+  new ResizeObserver(() => {
+    window.parent.postMessage(
+      { type: 'holded:contact-form-height', height: document.body.getBoundingClientRect().height },
+      window.location.origin,
+    );
+  }).observe(document.body);
+}
 
 const nameInput = document.getElementById('name') as HTMLInputElement;
 const codeInput = document.getElementById('code') as HTMLInputElement;
@@ -151,7 +166,7 @@ submitBtn.addEventListener('click', async (event) => {
     };
     const result = await createContact(payload, submissionKeyer.keyFor(JSON.stringify(payload)));
 
-    await savePendingContactSelection(t, {
+    const pending = {
       contactId: result.id,
       contactName,
       email: payload.email,
@@ -164,7 +179,20 @@ submitBtn.addEventListener('click', async (event) => {
         country: billAddress.country,
       },
       shippingAddresses: [],
-    });
+    };
+
+    if (!t) {
+      submissionKeyer.reset();
+      // The card-back opens the address popup anchored under the submit button.
+      const rect = submitBtn.getBoundingClientRect();
+      window.parent.postMessage(
+        { type: 'holded:contact-created', pending, anchor: { x: rect.left, y: rect.bottom } },
+        window.location.origin,
+      );
+      return;
+    }
+
+    await savePendingContactSelection(t, pending);
 
     submissionKeyer.reset(); // workflow complete — a later create starts a fresh key
     t.popup({
