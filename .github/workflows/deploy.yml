@@ -12,9 +12,9 @@ concurrency:
 jobs:
   frontend:
     name: Deploy frontend (Cloudflare Pages)
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
           version: 10.32.1
@@ -34,9 +34,9 @@ jobs:
 
   worker:
     name: Deploy worker (Cloudflare Workers)
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
           version: 10.32.1
