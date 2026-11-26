@@ -13,13 +13,22 @@ interface Env {
   REPORT_WEBHOOK_TOKEN?: string;
   /** Trello Power-Up id that every JWT must carry as `idPlugin` (wrangler.toml [vars]). */
   TRELLO_POWERUP_ID?: string;
+  /** The only browser origin allowed by CORS: the Power-Up's Pages site (wrangler.toml [vars]). */
+  ALLOWED_ORIGIN?: string;
 }
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-};
+/** Adds CORS headers only when the request comes from the Power-Up origin. */
+function withCors(response: Response, request: Request, env: Env): Response {
+  const headers = new Headers(response.headers);
+  headers.append('Vary', 'Origin');
+  const origin = request.headers.get('Origin');
+  if (env.ALLOWED_ORIGIN && origin === env.ALLOWED_ORIGIN) {
+    headers.set('Access-Control-Allow-Origin', origin);
+    headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  }
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
 
 const REPORT_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbxIRCGF-J5lJp4JtmIIUSxF4P0ZbwVSH8NMLZkYO47OQk3-yIcNpqrlF8SqA488eZLo/exec';
 const REPORT_WEBHOOK_TIMEOUT_MS = 30_000;
@@ -45,7 +54,7 @@ const REPORT_INVOICE_STATUSES = ['not_invoiced', 'invoiced', 'all'] as const;
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
   });
 }
 
@@ -507,7 +516,6 @@ async function handleV2AttachmentBinary(
       ? 'inline'
       : 'attachment';
     const headers: Record<string, string> = {
-      ...CORS_HEADERS,
       'Content-Type': contentType,
       'Content-Disposition': `${disposition}; filename="${safeAttachmentFilename(url.searchParams.get('name'))}"`,
       'Cache-Control': 'private, no-store',
@@ -1199,51 +1207,55 @@ async function handleV2Report(request: Request, env: Env): Promise<Response> {
   return jsonResponse(normalized);
 }
 
+async function route(request: Request, env: Env): Promise<Response> {
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204 });
+  }
+
+  const url = new URL(request.url);
+  const attachment = request.method === 'GET' ? attachmentRoute(url) : null;
+
+  // Every route needs the Power-Up's Trello JWT, except the attachment binary:
+  // <img> and <a> cannot send headers, so that URL carries its own signature.
+  if (!attachment?.attachmentId) {
+    const token = bearerToken(request);
+    if (!token || !(await verifyTrelloJwt(token, env))) {
+      return jsonResponse({ error: { code: 'UNAUTHORIZED' } }, 401);
+    }
+  }
+
+  if (attachment) {
+    return attachment.attachmentId
+      ? handleV2AttachmentBinary(url, env, attachment)
+      : handleV2AttachmentList(url, env, attachment);
+  }
+  if (request.method === 'GET' && url.pathname === '/v2/documents/search') {
+    return handleV2DocumentsSearch(url, env);
+  }
+  if (request.method === 'POST' && url.pathname === '/v2/contacts') {
+    return handleV2CreateContact(request, url, env);
+  }
+  if (request.method === 'POST' && /^\/v2\/contacts\/[^/]+\/shipping-addresses$/.test(url.pathname)) {
+    return handleV2AddShippingAddress(request, url, env);
+  }
+  if (request.method === 'POST' && url.pathname === '/v2/reports') {
+    return handleV2Report(request, env);
+  }
+  if (request.method === 'GET' && url.pathname.startsWith('/v2/contacts/')) {
+    return handleV2ContactDetail(url, env);
+  }
+  if (request.method === 'GET' && url.pathname === '/contacts/search') {
+    return handleContactsSearch(url, env);
+  }
+  if (request.method === 'GET' && url.pathname === '/projects/search') {
+    return handleProjectsSearch(url, env);
+  }
+
+  return jsonResponse({ error: 'Not found' }, 404);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
-    }
-
-    const url = new URL(request.url);
-    const attachment = request.method === 'GET' ? attachmentRoute(url) : null;
-
-    // Every route needs the Power-Up's Trello JWT, except the attachment binary:
-    // <img> and <a> cannot send headers, so that URL carries its own signature.
-    if (!attachment?.attachmentId) {
-      const token = bearerToken(request);
-      if (!token || !(await verifyTrelloJwt(token, env))) {
-        return jsonResponse({ error: { code: 'UNAUTHORIZED' } }, 401);
-      }
-    }
-
-    if (attachment) {
-      return attachment.attachmentId
-        ? handleV2AttachmentBinary(url, env, attachment)
-        : handleV2AttachmentList(url, env, attachment);
-    }
-    if (request.method === 'GET' && url.pathname === '/v2/documents/search') {
-      return handleV2DocumentsSearch(url, env);
-    }
-    if (request.method === 'POST' && url.pathname === '/v2/contacts') {
-      return handleV2CreateContact(request, url, env);
-    }
-    if (request.method === 'POST' && /^\/v2\/contacts\/[^/]+\/shipping-addresses$/.test(url.pathname)) {
-      return handleV2AddShippingAddress(request, url, env);
-    }
-    if (request.method === 'POST' && url.pathname === '/v2/reports') {
-      return handleV2Report(request, env);
-    }
-    if (request.method === 'GET' && url.pathname.startsWith('/v2/contacts/')) {
-      return handleV2ContactDetail(url, env);
-    }
-    if (request.method === 'GET' && url.pathname === '/contacts/search') {
-      return handleContactsSearch(url, env);
-    }
-    if (request.method === 'GET' && url.pathname === '/projects/search') {
-      return handleProjectsSearch(url, env);
-    }
-
-    return jsonResponse({ error: 'Not found' }, 404);
+    return withCors(await route(request, env), request, env);
   },
 };

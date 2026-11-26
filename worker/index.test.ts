@@ -1905,3 +1905,75 @@ describe('Worker access control (Trello Power-Up JWT)', () => {
     expect(response.status).toBe(204);
   });
 });
+
+describe('Worker CORS', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function preflight(origin: string): Request {
+    return new Request('https://proxy.test/v2/documents/search', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: origin,
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'authorization',
+      },
+    });
+  }
+
+  it('allows the Power-Up origin to send Authorization and Content-Type in a preflight', async () => {
+    const response = await rawWorker.fetch(preflight(ALLOWED_ORIGIN), env);
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(ALLOWED_ORIGIN);
+    expect(response.headers.get('Access-Control-Allow-Headers')).toBe('Authorization, Content-Type');
+    expect(response.headers.get('Access-Control-Allow-Methods')).toBe('GET, POST, OPTIONS');
+    expect(response.headers.get('Vary')).toBe('Origin');
+  });
+
+  it('gives no Access-Control-Allow-Origin to a preflight from another origin', async () => {
+    for (const origin of ['https://example.com', 'https://evil.trello-link-holded-power-up.pages.dev', 'null']) {
+      const response = await rawWorker.fetch(preflight(origin), env);
+
+      expect(response.headers.get('Access-Control-Allow-Origin'), origin).toBeNull();
+      expect(response.headers.get('Vary')).toBe('Origin');
+    }
+  });
+
+  it('returns the allowed origin on a GET from the Power-Up and nothing for another origin', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => internalJson({ items: [] })));
+
+    const allowed = await worker.fetch(
+      new Request('https://proxy.test/contacts/search?q=Acme', { headers: { Origin: ALLOWED_ORIGIN } }),
+      env,
+    );
+    const other = await worker.fetch(
+      new Request('https://proxy.test/contacts/search?q=Acme', { headers: { Origin: 'https://example.com' } }),
+      env,
+    );
+    const noOrigin = await worker.fetch(new Request('https://proxy.test/contacts/search?q=Acme'), env);
+
+    expect(allowed.status).toBe(200);
+    expect(allowed.headers.get('Access-Control-Allow-Origin')).toBe(ALLOWED_ORIGIN);
+    expect(allowed.headers.get('Vary')).toBe('Origin');
+    expect(other.headers.get('Access-Control-Allow-Origin')).toBeNull();
+    expect(noOrigin.headers.get('Access-Control-Allow-Origin')).toBeNull();
+  });
+
+  it('lets the Power-Up read a 401 so it can retry with a new JWT', async () => {
+    const response = await rawWorker.fetch(
+      new Request('https://proxy.test/contacts/search?q=Acme', { headers: { Origin: ALLOWED_ORIGIN } }),
+      env,
+    );
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(ALLOWED_ORIGIN);
+  });
+
+  it('gives no Access-Control-Allow-Origin when ALLOWED_ORIGIN is not configured', async () => {
+    const response = await rawWorker.fetch(preflight(ALLOWED_ORIGIN), { ...env, ALLOWED_ORIGIN: undefined });
+
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
+  });
+});
