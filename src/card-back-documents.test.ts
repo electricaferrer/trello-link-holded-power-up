@@ -2204,4 +2204,31 @@ describe('card-back document view (internal API v2)', () => {
     expect(authState.jwtCalls).toBe(2);
     expect(sent).toHaveLength(2);
   });
+
+  it('posts the JWT again when the embedded form finishes loading, even if it got one before', async () => {
+    const token = fakeTrelloJwt('only');
+    const { dom } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      { contactId: null, projectId: null, pluginData: { holdedCreateContactOpen: true }, jwtTokens: [token] },
+    );
+    await waitForRender();
+    const frame = dom.window.document.querySelector('.create-contact-frame');
+    const sent = [];
+    frame.contentWindow.postMessage = (message) => { sent.push(message); };
+
+    // A message posted while the frame is still navigating can be lost: the load posts again.
+    dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data: { type: 'ef-proxy-jwt-request' },
+      origin: dom.window.location.origin,
+      source: frame.contentWindow,
+    }));
+    await waitForRender();
+    frame.dispatchEvent(new dom.window.Event('load'));
+    await waitForRender();
+
+    expect(sent).toEqual([
+      { type: 'ef-proxy-jwt', jwt: token },
+      { type: 'ef-proxy-jwt', jwt: token },
+    ]);
+  });
 });

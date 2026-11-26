@@ -3015,6 +3015,8 @@
       renderCreateContactShell('Crear contacto',
         '<iframe class="create-contact-frame" title="Crear contacto" src="./src/popups/create-contact.html?embedded=1"></iframe>');
       createContactHost.querySelector('.create-contact-frame').addEventListener('load', function() {
+        // contentWindow survives navigation: anything posted before this load may be lost.
+        proxyJwtSentToFrame = null;
         getProxyJwt(false).then(sendProxyJwtToCreateContactFrame).catch(function() {});
       });
     }
