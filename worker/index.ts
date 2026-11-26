@@ -512,7 +512,8 @@ async function hasValidAttachmentSignature(
 ): Promise<boolean> {
   const exp = url.searchParams.get('exp') ?? '';
   const sig = url.searchParams.get('sig') ?? '';
-  if (!route.attachmentId || !/^\d{1,12}$/.test(exp) || !sig) return false;
+  // Canonical digits only, so the checked exp is exactly the signed one.
+  if (!route.attachmentId || !/^[1-9]\d{0,11}$/.test(exp) || !sig) return false;
   if (Number(exp) <= Math.floor(Date.now() / 1000)) return false;
   return verifyAttachmentSignature(secret, {
     type: route.type,

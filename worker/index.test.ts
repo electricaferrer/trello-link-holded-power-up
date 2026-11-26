@@ -2068,10 +2068,12 @@ describe('Worker signed attachment URLs', () => {
     noExp.searchParams.delete('exp');
     const textExp = new URL(valid);
     textExp.searchParams.set('exp', `${exp}.0`);
+    const zeroPaddedExp = new URL(valid);
+    zeroPaddedExp.searchParams.set('exp', `0${exp}`);
 
     const fetchImpl = vi.fn();
     vi.stubGlobal('fetch', fetchImpl);
-    for (const url of [alteredSig, otherAttachment, otherDocument, otherType, extendedExp, noSig, noExp, textExp, binaryUrl()]) {
+    for (const url of [alteredSig, otherAttachment, otherDocument, otherType, extendedExp, noSig, noExp, textExp, zeroPaddedExp, binaryUrl()]) {
       const response = await rawWorker.fetch(new Request(url), env);
       expect(response.status, url.toString()).toBe(403);
       expect((await response.json()).error.code).toBe('FORBIDDEN');
