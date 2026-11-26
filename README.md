@@ -227,7 +227,7 @@ Además, los tags `{{ contact: ... }}` y `{{ project: ... }}` se escriben en la 
 
 - Las claves (`EF_INTERNAL_API_KEY`, `REPORT_WEBHOOK_TOKEN`, `ATTACHMENT_URL_SECRET`) son **secrets** del Worker, nunca expuestos al frontend.
 - Cada llamada al proxy lleva el JWT de Trello del Power-Up (`t.jwt()`). El Worker lo verifica con las claves públicas de Trello y responde 401 sin él.
-- Los adjuntos se sirven con URLs firmadas que caducan a los 15 minutos, porque `<img>` y `<a>` no pueden mandar cabeceras.
+- Los adjuntos se sirven con URLs firmadas que caducan a los 15 minutos, porque `<img>` y `<a>` no pueden mandar cabeceras. La tarjeta renueva la lista antes de que caduquen.
 - CORS solo para el origen del Power-Up (`ALLOWED_ORIGIN`).
 
 ## Licencia

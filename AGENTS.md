@@ -149,15 +149,18 @@ route is internal-only — no Holded pass-through, no KV cache. Unknown routes �
 **Access control** (`worker/auth.ts`):
 
 - Every route except `OPTIONS` and the attachment binary needs `Authorization: Bearer <t.jwt()>`: an RS256
-  Trello JWT verified with `https://api.trello.com/1/resource/jwt-public-keys` (`iss: trello`, unexpired,
-  `idPlugin === TRELLO_POWERUP_ID`). Otherwise 401 `UNAUTHORIZED`, before any upstream call.
+  Trello JWT verified with `https://api.trello.com/1/resource/jwt-public-keys` (`iss: trello`, `exp > now` with
+  no clock tolerance, `idPlugin === TRELLO_POWERUP_ID`). Otherwise 401 `UNAUTHORIZED`, before any upstream call.
 - The frontend calls the proxy only through `proxyFetch` (`src/proxy-auth.ts`): JWT reused until 60 s before
   its `exp`, one retry with a new JWT after a 401. `card-back.html` mirrors it inline. The embedded
   create-contact frame has no `t`: the card-back posts it `{type: 'ef-proxy-jwt', jwt}` (same origin only)
-  on load, on renewal, and when the frame asks with `ef-proxy-jwt-request`.
+  on load, on renewal, and always in answer to `ef-proxy-jwt-request` (even with the same JWT), or
+  `{type: 'ef-proxy-jwt-error'}` if `t.jwt()` fails. The frame rejects its waiting requests on that error
+  or after 10 s, so the submit can be retried.
 - The attachment list signs each binary URL with `exp` (15 min) and `sig` (HMAC-SHA256 with
   `ATTACHMENT_URL_SECRET` over type, document, attachment and `exp`), because `<img>`/`<a>` cannot send
-  headers. The binary answers 403 `FORBIDDEN` without a valid, unexpired signature.
+  headers. The binary answers 403 `FORBIDDEN` without a valid, unexpired signature. The card-back renews
+  the list from 60 s before its earliest `exp`: on a timer, and before opening a URL, «Cargar más» or reopening.
 - CORS headers only when `Origin === ALLOWED_ORIGIN`, the 401 included, so the frontend can retry.
 - Every internal-API call sends `X-EF-Client: trello-power-up/<package.json version>`.
 
