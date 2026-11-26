@@ -152,7 +152,7 @@ function showCreateForm(pending: PendingContactSelection) {
       };
 
       const key = submissionKeyer.keyFor(JSON.stringify({ contactId: pending.contactId, newAddr }));
-      await addShippingAddress(pending.contactId, newAddr, key);
+      await addShippingAddress(t, pending.contactId, newAddr, key);
       await selectAddress(
         pending,
         newAddr.name,

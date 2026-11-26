@@ -208,6 +208,8 @@ export interface TrelloContext {
   board(...fields: string[]): Promise<{ id: string; name: string; [key: string]: unknown }>;
   member(...fields: string[]): Promise<{ id: string; fullName: string; username: string; [key: string]: unknown }>;
   getRestApi(): TrelloRestApi;
+  /** Signed Trello JWT for the current member; the Holded proxy requires it. */
+  jwt(options?: { state?: string }): Promise<string>;
 }
 
 export interface TrelloRestApi {

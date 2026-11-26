@@ -74,7 +74,7 @@ function renderResults(contacts: HoldedContact[], query: string) {
       clearSelectionError();
       let contact: HoldedContact;
       try {
-        contact = await getContactDetail(id);
+        contact = await getContactDetail(t, id);
       } catch (err) {
         console.error('Holded: error loading contact detail', err);
         showSelectionError('No se pudo cargar el contacto. Pulsa de nuevo para reintentar.');
@@ -102,7 +102,7 @@ async function doSearch() {
 
   resultsDiv.innerHTML = '<div class="loading">Buscando...</div>';
   try {
-    const { results } = await searchContacts(query);
+    const { results } = await searchContacts(t, query);
     renderResults(results, query);
   } catch (err) {
     resultsDiv.innerHTML = `<div class="error">Error: ${(err as Error).message}</div>`;

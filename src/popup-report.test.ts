@@ -43,6 +43,7 @@ function installReportPopupDom() {
     getToken: () => Promise.resolve('trello-token'),
   };
   const t = {
+    jwt: vi.fn(async () => 'report.jwt.sig'),
     get: vi.fn(),
     popup: vi.fn(),
     closePopup: vi.fn(),
@@ -190,6 +191,12 @@ describe('report popup', () => {
     expect(dom.window.document.getElementById('message').querySelectorAll('button')).toHaveLength(0);
     const reportCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/v2/reports'));
     expect(reportCall).toBeTruthy();
+    // Estimate search and report request go to the proxy with the Trello JWT.
+    const proxyCalls = fetchImpl.mock.calls.filter(([url]) => String(url).includes('/v2/'));
+    expect(proxyCalls.length).toBeGreaterThanOrEqual(2);
+    for (const [, init] of proxyCalls) {
+      expect(init.headers).toMatchObject({ Authorization: 'Bearer report.jwt.sig' });
+    }
     expect(JSON.parse(reportCall[1].body).email).toEqual(['operator@example.com', 'team@example.com']);
     expect(JSON.parse(reportCall[1].body).filters.invoiceStatus).toBe('all');
     dom.window.close();
@@ -346,7 +353,7 @@ describe('report popup', () => {
       projectId: 'project-1',
       projectName: 'Obra Norte',
     });
-    vi.stubGlobal('fetch', vi.fn((url) => {
+    const fetchImpl = vi.fn((url) => {
       const requestUrl = String(url);
       if (requestUrl.includes('/1/members/me')) {
         return Promise.resolve(new Response(JSON.stringify({ email: 'operator@example.com' })));
@@ -360,7 +367,8 @@ describe('report popup', () => {
         return Promise.resolve(new Response(JSON.stringify({ results: [], hasMore: false })));
       }
       return Promise.resolve(new Response('{}'));
-    }));
+    });
+    vi.stubGlobal('fetch', fetchImpl);
 
     await import('./popups/report');
     await vi.waitFor(() => expect(dom.window.document.getElementById('report-form').hidden).toBe(false));
@@ -373,6 +381,8 @@ describe('report popup', () => {
 
     expect(dom.window.document.getElementById('customer-query').value).toBe('Cliente Dos');
     expect(dom.window.document.getElementById('project-query').value).toBe('Obra Norte');
+    const searchCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/contacts/search'));
+    expect(searchCall[1].headers).toMatchObject({ Authorization: 'Bearer report.jwt.sig' });
     dom.window.close();
   });
 

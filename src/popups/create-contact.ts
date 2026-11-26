@@ -4,6 +4,7 @@ import { TRELLO_APP_KEY } from '../config';
 import { formatSpanishTextCase } from '../spanish-text-case';
 import { savePendingContactSelection } from '../pending-contact';
 import type { TrelloContext } from '../types';
+import { createParentJwtSource } from '../proxy-auth';
 
 // Embedded in the card-back section, which owns the Trello context: this frame
 // only creates the contact and hands it back to its parent.
@@ -11,6 +12,8 @@ const embedded = new URLSearchParams(window.location.search).get('embedded') ===
 const t = embedded
   ? null
   : window.TrelloPowerUp.iframe({ appKey: TRELLO_APP_KEY, appName: 'Holded' }) as unknown as TrelloContext;
+// Proxy calls need the Trello JWT; embedded, the card section posts it to this frame.
+const proxyAuth = t ?? createParentJwtSource();
 
 const submissionKeyer = createSubmissionKeyer();
 
@@ -64,7 +67,7 @@ function checkCodeDuplicate() {
     // Guard against stale response if user kept typing
     if (codeInput.value.trim() !== code) return;
     try {
-      const { results } = await searchContacts(code);
+      const { results } = await searchContacts(proxyAuth, code);
       if (codeInput.value.trim() !== code) return;
       const normalized = code.toUpperCase().replace(/[\s\-]/g, '');
       const match = results.find((c) => {
@@ -164,7 +167,7 @@ submitBtn.addEventListener('click', async (event) => {
         purchasesTax: ['s_iva_21'],
       },
     };
-    const result = await createContact(payload, submissionKeyer.keyFor(JSON.stringify(payload)));
+    const result = await createContact(proxyAuth, payload, submissionKeyer.keyFor(JSON.stringify(payload)));
 
     const pending = {
       contactId: result.id,

@@ -77,7 +77,7 @@ async function doSearch() {
 
   resultsDiv.innerHTML = '<div class="loading">Buscando...</div>';
   try {
-    const { results } = await searchProjects(query);
+    const { results } = await searchProjects(t, query);
     renderResults(results, query);
   } catch (err) {
     resultsDiv.innerHTML = `<div class="error">Error: ${(err as Error).message}</div>`;

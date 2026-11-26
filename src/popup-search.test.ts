@@ -2,9 +2,12 @@
 import { JSDOM } from 'jsdom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const POPUP_JWT = 'popup.jwt.sig';
+
 function installPopupDom(markup: string) {
   const dom = new JSDOM(markup, { url: 'https://power-up.test/' });
   const trello = {
+    jwt: vi.fn(async () => POPUP_JWT),
     popup: vi.fn(),
     closePopup: vi.fn(),
     get: vi.fn(),
@@ -68,6 +71,10 @@ describe('popup search behavior', () => {
     expect(trello.set).not.toHaveBeenCalled();
     expect(trello.closePopup).not.toHaveBeenCalled();
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+    // Contact search and contact detail both carry the Trello JWT.
+    for (const [, init] of fetchImpl.mock.calls) {
+      expect(init.headers).toMatchObject({ Authorization: `Bearer ${POPUP_JWT}` });
+    }
 
     dom.window.close();
   });
@@ -228,9 +235,10 @@ describe('popup search behavior', () => {
       </div>
     `);
     trello.card.mockResolvedValue({ id: 'card-1', desc: '' });
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       id: 'contact-1',
-    }))));
+    })));
+    vi.stubGlobal('fetch', fetchImpl);
 
     await import('./popups/create-contact');
 
@@ -263,6 +271,8 @@ describe('popup search behavior', () => {
       });
     });
     expect(trello.closePopup).not.toHaveBeenCalled();
+    const createCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/v2/contacts?idempotencyKey='));
+    expect(createCall[1].headers).toMatchObject({ Authorization: `Bearer ${POPUP_JWT}` });
     expect(JSON.parse(dom.window.localStorage.getItem('holdedPendingContact:card-1'))).toEqual({
       contactId: 'contact-1',
       contactName: 'Cliente Uno',
@@ -303,11 +313,18 @@ describe('popup search behavior', () => {
     `);
     dom.reconfigure({ url: 'https://power-up.test/create-contact.html?embedded=1' });
     const postMessage = vi.spyOn(dom.window.parent, 'postMessage').mockImplementation(() => undefined);
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       id: 'contact-1',
-    }))));
+    })));
+    vi.stubGlobal('fetch', fetchImpl);
 
     await import('./popups/create-contact');
+    // The card section hands its Trello JWT to the embedded form.
+    dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data: { type: 'ef-proxy-jwt', jwt: 'parent.jwt.sig' },
+      origin: 'https://power-up.test',
+      source: dom.window.parent,
+    }));
 
     const values = {
       name: 'Cliente Uno',
@@ -329,7 +346,13 @@ describe('popup search behavior', () => {
     const clickEvent = new dom.window.MouseEvent('click', { bubbles: true });
     submit.dispatchEvent(clickEvent);
 
-    await vi.waitFor(() => expect(postMessage).toHaveBeenCalled());
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'holded:contact-created' }),
+      'https://power-up.test',
+    ));
+    expect(fetchImpl.mock.calls[0][0]).toContain('/v2/contacts?idempotencyKey=');
+    expect(fetchImpl.mock.calls[0][1].headers).toMatchObject({ Authorization: 'Bearer parent.jwt.sig' });
+    expect(trello.jwt).not.toHaveBeenCalled();
     expect(postMessage).toHaveBeenCalledWith({
       type: 'holded:contact-created',
       anchor: { x: expect.any(Number), y: expect.any(Number) },
@@ -352,6 +375,71 @@ describe('popup search behavior', () => {
 
     dom.window.close();
   });
+  it('keeps the embedded submit waiting, without calling the proxy, until the card section sends a JWT', async () => {
+    const { dom } = installPopupDom(`
+      <div id="form">
+        <input id="name" />
+        <input id="code" />
+        <input id="address" />
+        <input id="city" />
+        <input id="postalCode" />
+        <input id="province" />
+        <input id="country" />
+        <input id="email" />
+        <input id="phone" />
+        <div id="type-toggle">
+          <button type="button" data-value="empresa">Empresa</button>
+          <button type="button" data-value="persona">Persona</button>
+        </div>
+        <button type="button" id="submit-btn">Crear contacto</button>
+        <div id="code-duplicate-msg"></div>
+        <div id="error-msg"></div>
+      </div>
+    `);
+    dom.reconfigure({ url: 'https://power-up.test/create-contact.html?embedded=1' });
+    const postMessage = vi.spyOn(dom.window.parent, 'postMessage').mockImplementation(() => undefined);
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'contact-1' })));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await import('./popups/create-contact');
+
+    for (const [id, value] of Object.entries({
+      name: 'Cliente Uno',
+      code: 'B12345678',
+      address: 'C/ Major 1',
+      city: 'Palma',
+      postalCode: '07001',
+      province: 'Illes Balears',
+      country: 'España',
+      email: 'cliente@example.com',
+    })) {
+      (dom.window.document.getElementById(id) as HTMLInputElement).value = value;
+    }
+    dom.window.document.querySelector<HTMLButtonElement>('[data-value="empresa"]')!.click();
+    dom.window.document.getElementById('submit-btn')!.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+
+    // It asks the card section for a JWT and waits.
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalledWith({ type: 'ef-proxy-jwt-request' }, 'https://power-up.test'));
+    // A JWT from another origin is ignored.
+    dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data: { type: 'ef-proxy-jwt', jwt: 'foreign.jwt.sig' },
+      origin: 'https://example.com',
+      source: dom.window.parent,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data: { type: 'ef-proxy-jwt', jwt: 'parent.jwt.sig' },
+      origin: 'https://power-up.test',
+      source: dom.window.parent,
+    }));
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    expect(fetchImpl.mock.calls[0][1].headers).toMatchObject({ Authorization: 'Bearer parent.jwt.sig' });
+
+    dom.window.close();
+  });
+
   it('shows both the linked client and project code in project results', async () => {
     const { dom } = installPopupDom(`
       <input id="search" />
@@ -410,6 +498,8 @@ describe('popup search behavior', () => {
     (dom.window.document.querySelector('.result-item') as HTMLElement).click();
 
     await vi.waitFor(() => expect(trello.closePopup).toHaveBeenCalled());
+    expect(fetchImpl.mock.calls[0][0]).toContain('/projects/search?q=Obra');
+    expect(fetchImpl.mock.calls[0][1].headers).toMatchObject({ Authorization: `Bearer ${POPUP_JWT}` });
     const description = JSON.parse(fetchImpl.mock.calls[1][1].body).desc;
     expect(description).toContain(
       '/albaran-trabajo/nuevo?projectId=project-1&customerId=customer-1'
@@ -693,6 +783,8 @@ describe('address selection behavior', () => {
 
     await vi.waitFor(() => expect(trello.closePopup).toHaveBeenCalled());
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0][0]).toContain('/shipping-addresses?idempotencyKey=');
+    expect(fetchImpl.mock.calls[0][1].headers).toMatchObject({ Authorization: `Bearer ${POPUP_JWT}` });
     const description = JSON.parse(fetchImpl.mock.calls[1][1].body).desc;
     expect(description).toContain(
       'query=C%2F%20Nou%203%2C%2007003%20Palma%2C%20Illes%20Balears%2C%20Espa%C3%B1a'
