@@ -1,3 +1,4 @@
+import { bearerToken, verifyTrelloJwt } from './auth';
 import { buildDocumentUrl } from './holded-v2';
 import {
   INTERNAL_API_BASE,
@@ -10,6 +11,8 @@ import {
 interface Env {
   EF_INTERNAL_API_KEY?: string;
   REPORT_WEBHOOK_TOKEN?: string;
+  /** Trello Power-Up id that every JWT must carry as `idPlugin` (wrangler.toml [vars]). */
+  TRELLO_POWERUP_ID?: string;
 }
 
 const CORS_HEADERS = {
@@ -1203,14 +1206,21 @@ export default {
     }
 
     const url = new URL(request.url);
+    const attachment = request.method === 'GET' ? attachmentRoute(url) : null;
 
-    if (request.method === 'GET') {
-      const route = attachmentRoute(url);
-      if (route) {
-        return route.attachmentId
-          ? handleV2AttachmentBinary(url, env, route)
-          : handleV2AttachmentList(url, env, route);
+    // Every route needs the Power-Up's Trello JWT, except the attachment binary:
+    // <img> and <a> cannot send headers, so that URL carries its own signature.
+    if (!attachment?.attachmentId) {
+      const token = bearerToken(request);
+      if (!token || !(await verifyTrelloJwt(token, env))) {
+        return jsonResponse({ error: { code: 'UNAUTHORIZED' } }, 401);
       }
+    }
+
+    if (attachment) {
+      return attachment.attachmentId
+        ? handleV2AttachmentBinary(url, env, attachment)
+        : handleV2AttachmentList(url, env, attachment);
     }
     if (request.method === 'GET' && url.pathname === '/v2/documents/search') {
       return handleV2DocumentsSearch(url, env);

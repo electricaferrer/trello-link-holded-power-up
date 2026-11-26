@@ -1,9 +1,53 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import worker from './index';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import rawWorker from './index';
+import { clearTrelloKeyCache, verifyTrelloJwt } from './auth';
+import {
+  TEST_POWERUP_ID,
+  createTrelloSigner,
+  publicKeysResponse,
+  trelloClaims,
+  type TrelloTestSigner,
+} from './test-support/trello-jwt';
+
+const ALLOWED_ORIGIN = 'https://trello-link-holded-power-up.pages.dev';
 
 const env = {
   EF_INTERNAL_API_KEY: 'efk_test',
   REPORT_WEBHOOK_TOKEN: 'report-token',
+  TRELLO_POWERUP_ID: TEST_POWERUP_ID,
+  ALLOWED_ORIGIN,
+  ATTACHMENT_URL_SECRET: 'attachment-secret-for-tests',
+};
+
+let trelloSigner: TrelloTestSigner;
+let validJwt: string;
+
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+beforeAll(async () => {
+  trelloSigner = await createTrelloSigner();
+  validJwt = await trelloSigner.sign(trelloClaims(nowSeconds()));
+});
+
+// Warm the isolate's Trello key cache so route tests only see their own upstream fetches.
+beforeEach(async () => {
+  clearTrelloKeyCache();
+  await verifyTrelloJwt(validJwt, env, nowSeconds(), async () => publicKeysResponse([trelloSigner.publicKeyPem]));
+});
+
+function withTrelloJwt(request: Request): Request {
+  if (request.headers.has('Authorization')) return request;
+  const headers = new Headers(request.headers);
+  headers.set('Authorization', `Bearer ${validJwt}`);
+  return new Request(request, { headers });
+}
+
+/** The Worker as the Power-Up calls it: every request carries a valid Trello JWT. */
+const worker = {
+  fetch: (request: Request, workerEnv: Parameters<typeof rawWorker.fetch>[1]) =>
+    rawWorker.fetch(withTrelloJwt(request), workerEnv),
 };
 
 describe('Holded proxy Worker V2 routes', () => {
@@ -1770,5 +1814,94 @@ describe('Worker /v2 internal-API document routes', () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'code already used' });
+  });
+});
+
+describe('Worker access control (Trello Power-Up JWT)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const protectedRequests: Array<[string, () => Request]> = [
+    ['GET /contacts/search', () => new Request('https://proxy.test/contacts/search?q=Acme')],
+    ['GET /projects/search', () => new Request('https://proxy.test/projects/search?q=Obra')],
+    ['GET /v2/documents/search', () => new Request('https://proxy.test/v2/documents/search?contactId=contact-1&type=waybills')],
+    ['GET attachment list', () => new Request('https://proxy.test/v2/documents/waybills/doc-1/attachments')],
+    ['GET /v2/contacts/:id', () => new Request('https://proxy.test/v2/contacts/contact-1')],
+    ['POST /v2/contacts', () => new Request('https://proxy.test/v2/contacts?idempotencyKey=idem-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'X' }),
+    })],
+    ['POST shipping address', () => new Request('https://proxy.test/v2/contacts/contact-1/shipping-addresses?idempotencyKey=idem-2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Obra' }),
+    })],
+    ['POST /v2/reports', () => new Request('https://proxy.test/v2/reports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customerId: 'contact-1', email: ['a@example.com'] }),
+    })],
+    ['unknown route', () => new Request('https://proxy.test/holded/contacts')],
+  ];
+
+  function withAuthorization(request: Request, value: string): Request {
+    const headers = new Headers(request.headers);
+    headers.set('Authorization', value);
+    return new Request(request, { headers });
+  }
+
+  it.each(protectedRequests)('rejects %s without a JWT and never calls upstream', async (_name, build) => {
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await rawWorker.fetch(build(), env);
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: { code: 'UNAUTHORIZED' } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each(protectedRequests)('rejects %s with an invalid JWT and never calls upstream', async (_name, build) => {
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+    const otherSigner = await createTrelloSigner();
+    const now = nowSeconds();
+    const invalidTokens = [
+      await otherSigner.sign(trelloClaims(now)),
+      await trelloSigner.sign(trelloClaims(now, { iss: 'someone' })),
+      await trelloSigner.sign(trelloClaims(now, { exp: now - 120, iat: now - 1000 })),
+      await trelloSigner.sign(trelloClaims(now, { idPlugin: '5e66784c606cb1160a8f5dc0' })),
+      'not-a-jwt',
+    ];
+
+    for (const token of invalidTokens) {
+      const response = await rawWorker.fetch(withAuthorization(build(), `Bearer ${token}`), env);
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: { code: 'UNAUTHORIZED' } });
+    }
+    const basic = await rawWorker.fetch(withAuthorization(build(), `Basic ${validJwt}`), env);
+    expect(basic.status).toBe(401);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers with a valid JWT as before', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(internalJson({ items: [] }));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await rawWorker.fetch(
+      withAuthorization(new Request('https://proxy.test/contacts/search?q=Acme'), `Bearer ${validJwt}`),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers preflight requests without a JWT', async () => {
+    const response = await rawWorker.fetch(new Request('https://proxy.test/contacts/search', { method: 'OPTIONS' }), env);
+
+    expect(response.status).toBe(204);
   });
 });
