@@ -61,18 +61,25 @@ pnpm exec wrangler deploy --config worker/wrangler.toml
 Note: Cloudflare edge propagation can lag a few seconds after deploy — cache-bust with `?cb=…` when
 verifying, and prefer the deployment-specific URL to bypass the root-domain cache.
 
-## Worker secrets
+## Worker secrets and vars
 
-The Worker needs two secrets:
+The Worker needs three secrets:
+
+- `EF_INTERNAL_API_KEY`: internal API key (`efk_…`).
+- `REPORT_WEBHOOK_TOKEN`: token the Worker sends to the Apps Script report endpoint.
+- `ATTACHMENT_URL_SECRET`: random HMAC key that signs the attachment binary URLs.
 
 ```bash
 echo "efk_..." | pnpm exec wrangler secret put EF_INTERNAL_API_KEY --name holded-proxy
 echo "<report-webhook-token>" | pnpm exec wrangler secret put REPORT_WEBHOOK_TOKEN --name holded-proxy
+openssl rand -base64 32 | pnpm exec wrangler secret put ATTACHMENT_URL_SECRET --name holded-proxy
 ```
 
-Must pipe via `echo` — non-interactive `wrangler secret put` otherwise sends an empty string. The key
-also lives in `.env` as `INTERNAL_APP` (gitignored) for local reference. No KV binding; the old
-`HOLDED_API_V2` / `HOLDED_API_KEY` secrets have been deleted.
+Must pipe via stdin: non-interactive `wrangler secret put` otherwise sends an empty string. The key
+also lives in `.env` as `INTERNAL_APP` (gitignored) for local reference. No KV binding.
+
+`worker/wrangler.toml` `[vars]` holds `TRELLO_POWERUP_ID` (the Power-Up whose JWTs the proxy accepts)
+and `ALLOWED_ORIGIN` (the only CORS origin, the Pages site).
 
 ## Trello Power-Up capabilities
 
@@ -139,13 +146,28 @@ interface CardHoldedData {
 Thin proxy to the internal API. Auth: `EF_INTERNAL_API_KEY`. Client: `worker/internal-api.ts`. Every
 route is internal-only — no Holded pass-through, no KV cache. Unknown routes → 404.
 
+**Access control** (`worker/auth.ts`):
+
+- Every route except `OPTIONS` and the attachment binary needs `Authorization: Bearer <t.jwt()>`: an RS256
+  Trello JWT verified with `https://api.trello.com/1/resource/jwt-public-keys` (`iss: trello`, unexpired,
+  `idPlugin === TRELLO_POWERUP_ID`). Otherwise 401 `UNAUTHORIZED`, before any upstream call.
+- The frontend calls the proxy only through `proxyFetch` (`src/proxy-auth.ts`): JWT reused until 60 s before
+  its `exp`, one retry with a new JWT after a 401. `card-back.html` mirrors it inline. The embedded
+  create-contact frame has no `t`: the card-back posts it `{type: 'ef-proxy-jwt', jwt}` (same origin only)
+  on load, on renewal, and when the frame asks with `ef-proxy-jwt-request`.
+- The attachment list signs each binary URL with `exp` (15 min) and `sig` (HMAC-SHA256 with
+  `ATTACHMENT_URL_SECRET` over type, document, attachment and `exp`), because `<img>`/`<a>` cannot send
+  headers. The binary answers 403 `FORBIDDEN` without a valid, unexpired signature.
+- CORS headers only when `Origin === ALLOWED_ORIGIN`, the 401 included, so the frontend can retry.
+- Every internal-API call sends `X-EF-Client: trello-power-up/<package.json version>`.
+
 | Worker route | Internal API call | Use |
 |---|---|---|
 | `GET /contacts/search?q=` | `GET /contacts?query=` | Contact search (summaries) for the search popup |
 | `GET /projects/search?q=` | `GET /projects?query=` | Project search → `{ id, name, contactName, key }` |
 | `GET /v2/documents/search?contactId=&projectId=&type=&scope=&page=&cursor=&category=&view=` | `/sales-orders` \| `/waybills` \| `/invoices` \| `/estimates` (+ `/purchase-orders`) | One page of docs for the active card-back tab |
 | `GET /v2/documents/:type/:id/attachments` | `GET /:type/:id/attachments` | Lazy attachment metadata with browser-safe proxy URLs |
-| `GET /v2/documents/:type/:id/attachments/:attachmentId` | Absolute authenticated `downloadUrl` from the metadata response | Validated binary/image proxy; opaque IDs are preserved exactly |
+| `GET /v2/documents/:type/:id/attachments/:attachmentId` | Absolute authenticated `downloadUrl` from the metadata response | Validated binary/image proxy; opaque IDs are preserved exactly; needs the signed `exp`/`sig` from the list, no JWT |
 | `GET /v2/contacts/:id` | `GET /contacts/:id` | Contact detail (camelCase `customFields`) for the "Importante" box + address picker |
 | `POST /v2/contacts?idempotencyKey=` | `POST /contacts` | Create contact (camelCase payload incl. `defaults`) |
 | `POST /v2/contacts/:id/shipping-addresses?idempotencyKey=` | `POST /contacts/:id/shipping-addresses` | Append a shipping address |
@@ -195,6 +217,9 @@ on each row. States: skeleton load,
 
 - **Unlink/description tag not removed** → must run in the unlink **popup** and pass `mouseEvent` to
   `t.popup`; the card-back iframe can't get a REST write token.
+- **401 `UNAUTHORIZED`** from the worker → the call skipped `proxyFetch` or the JWT is invalid. Tests that
+  mock `TrelloPowerUp.iframe()` must give it a `jwt()`; the embedded create-contact form needs an
+  `ef-proxy-jwt` message from its parent.
 - **`DATA_NOT_READY` (503)** from the worker → internal API still syncing; the UI shows "Sincronizando…"
   with a retry. Not an error to fix.
 - **Edge cache lag after deploy** → cache-bust (`?cb=…`) or use the deployment-specific `*.pages.dev` URL.

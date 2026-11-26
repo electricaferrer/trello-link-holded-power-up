@@ -1,0 +1,15 @@
+# Orca workspace configuration for this repository.
+#
+# Orca runs each hook through its own `#!/usr/bin/env bash` shebang with `set -e`:
+# the first failing command aborts the hook and the workspace reports a setup failure.
+
+# The agent's first command needs node_modules, so hold its startup until setup finishes.
+setupAgentStartupPolicy: wait-for-setup
+
+scripts:
+  setup: |
+    #!/usr/bin/env bash
+    pnpm install --frozen-lockfile
+  # Nothing to clean up when the workspace is archived.
+  archive: |
+    #!/usr/bin/env bash
