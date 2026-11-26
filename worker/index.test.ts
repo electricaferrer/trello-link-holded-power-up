@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import rawWorker from './index';
-import { clearTrelloKeyCache, verifyTrelloJwt } from './auth';
+import { clearTrelloKeyCache, signAttachmentUrl, verifyTrelloJwt } from './auth';
 import {
   TEST_POWERUP_ID,
   createTrelloSigner,
@@ -42,6 +42,17 @@ function withTrelloJwt(request: Request): Request {
   const headers = new Headers(request.headers);
   headers.set('Authorization', `Bearer ${validJwt}`);
   return new Request(request, { headers });
+}
+
+/** Adds `exp` and `sig` as the attachment list does (valid for 15 minutes by default). */
+async function signAttachment(
+  url: URL,
+  parts: { type: string; documentId: string; attachmentId: string },
+  exp = nowSeconds() + 900,
+): Promise<URL> {
+  url.searchParams.set('exp', String(exp));
+  url.searchParams.set('sig', await signAttachmentUrl(env.ATTACHMENT_URL_SECRET, { ...parts, exp }));
+  return url;
 }
 
 /** The Worker as the Power-Up calls it: every request carries a valid Trello JWT. */
@@ -279,6 +290,7 @@ describe('Worker /v2 internal-API document routes', () => {
     );
     proxyUrl.searchParams.set('name', 'cuadro.jpg');
     proxyUrl.searchParams.set('source', downloadUrl);
+    await signAttachment(proxyUrl, { type: 'waybills', documentId: 'abcdef0123456789abcdef01', attachmentId });
     const fetchImpl = vi.fn().mockResolvedValue(new Response('image-body', {
       headers: {
         'Content-Type': 'image/jpeg',
@@ -322,6 +334,7 @@ describe('Worker /v2 internal-API document routes', () => {
       'source',
       'https://api.app.electricaferrer.es/internal/v1/contacts/contact-1',
     );
+    await signAttachment(proxyUrl, { type: 'waybills', documentId: 'abcdef0123456789abcdef01', attachmentId: 'foto.png' });
 
     const response = await worker.fetch(new Request(proxyUrl), envV2);
 
@@ -1975,5 +1988,134 @@ describe('Worker CORS', () => {
     const response = await rawWorker.fetch(preflight(ALLOWED_ORIGIN), { ...env, ALLOWED_ORIGIN: undefined });
 
     expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
+  });
+});
+
+describe('Worker signed attachment URLs', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const documentId = 'abcdef0123456789abcdef01';
+  const attachmentId = 'foto final.jpg';
+  const parts = { type: 'waybills', documentId, attachmentId };
+
+  function binaryUrl(id = attachmentId): URL {
+    return new URL(`https://proxy.test/v2/documents/waybills/${documentId}/attachments/${encodeURIComponent(id)}`);
+  }
+
+  function imageResponse(): Response {
+    return new Response('image-body', { headers: { 'Content-Type': 'image/jpeg' } });
+  }
+
+  async function listedUrl(): Promise<URL> {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(internalJson({
+      items: [{
+        id: attachmentId,
+        name: attachmentId,
+        contentType: 'image/jpeg',
+        downloadUrl: `${INTERNAL_BASE}/waybills/${documentId}/attachments/${encodeURIComponent(attachmentId)}`,
+      }],
+      hasMore: false,
+      nextCursor: null,
+    })));
+    const response = await worker.fetch(
+      new Request(`https://proxy.test/v2/documents/waybills/${documentId}/attachments`),
+      env,
+    );
+    const body = await response.json();
+    vi.unstubAllGlobals();
+    return new URL(body.items[0].url, 'https://proxy.test');
+  }
+
+  it('lists binary URLs with exp 15 minutes ahead and a signature the binary accepts', async () => {
+    const before = nowSeconds();
+    const url = await listedUrl();
+    const exp = Number(url.searchParams.get('exp'));
+
+    expect(exp).toBeGreaterThanOrEqual(before + 900);
+    expect(exp).toBeLessThanOrEqual(nowSeconds() + 900);
+    expect(url.searchParams.get('sig')).toBe(await signAttachmentUrl(env.ATTACHMENT_URL_SECRET, { ...parts, exp }));
+
+    const fetchImpl = vi.fn().mockResolvedValue(imageResponse());
+    vi.stubGlobal('fetch', fetchImpl);
+    // <img> and <a> send no Authorization header.
+    const response = await rawWorker.fetch(new Request(url), env);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('image-body');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an altered signature, another attachment, a moved exp or a missing signature with 403', async () => {
+    const valid = await signAttachment(binaryUrl(), parts);
+    const sig = valid.searchParams.get('sig')!;
+    const exp = valid.searchParams.get('exp')!;
+
+    const alteredSig = new URL(valid);
+    // Change the first character: the last one of a 43-character base64url value carries padding bits.
+    alteredSig.searchParams.set('sig', `${sig.startsWith('A') ? 'B' : 'A'}${sig.slice(1)}`);
+    const otherAttachment = binaryUrl('otra foto.jpg');
+    otherAttachment.search = valid.search;
+    const otherDocument = new URL(valid.toString().replace(documentId, 'fedcba9876543210fedcba98'));
+    const otherType = new URL(valid.toString().replace('/waybills/', '/invoices/'));
+    const extendedExp = new URL(valid);
+    extendedExp.searchParams.set('exp', String(Number(exp) + 3600));
+    const noSig = new URL(valid);
+    noSig.searchParams.delete('sig');
+    const noExp = new URL(valid);
+    noExp.searchParams.delete('exp');
+    const textExp = new URL(valid);
+    textExp.searchParams.set('exp', `${exp}.0`);
+
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+    for (const url of [alteredSig, otherAttachment, otherDocument, otherType, extendedExp, noSig, noExp, textExp, binaryUrl()]) {
+      const response = await rawWorker.fetch(new Request(url), env);
+      expect(response.status, url.toString()).toBe(403);
+      expect((await response.json()).error.code).toBe('FORBIDDEN');
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects an expired signed URL with 403', async () => {
+    const expired = await signAttachment(binaryUrl(), parts, nowSeconds() - 1);
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await rawWorker.fetch(new Request(expired), env);
+
+    expect(response.status).toBe(403);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not let a valid signature reach another resource through source', async () => {
+    const url = await signAttachment(binaryUrl(), parts);
+    url.searchParams.set('source', `${INTERNAL_BASE}/waybills/${documentId}/attachments/${encodeURIComponent('otra foto.jpg')}`);
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await rawWorker.fetch(new Request(url), env);
+
+    expect(response.status).toBe(400);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers 500 CONFIG without ATTACHMENT_URL_SECRET and never calls upstream', async () => {
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+    const unsigned = { ...env, ATTACHMENT_URL_SECRET: undefined };
+
+    const list = await worker.fetch(
+      new Request(`https://proxy.test/v2/documents/waybills/${documentId}/attachments`),
+      unsigned,
+    );
+    const binary = await rawWorker.fetch(new Request(await signAttachment(binaryUrl(), parts)), unsigned);
+
+    expect(list.status).toBe(500);
+    expect((await list.json()).error.code).toBe('CONFIG');
+    expect(binary.status).toBe(500);
+    expect((await binary.json()).error.code).toBe('CONFIG');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

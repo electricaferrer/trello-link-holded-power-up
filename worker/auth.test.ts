@@ -243,5 +243,15 @@ describe('attachment URL signatures', () => {
     expect(await verifyAttachmentSignature(SECRET, parts, '')).toBe(false);
     expect(await verifyAttachmentSignature(SECRET, parts, 'not base64!')).toBe(false);
     expect(await verifyAttachmentSignature(SECRET, parts, sig.slice(0, -2))).toBe(false);
+    expect(await verifyAttachmentSignature(SECRET, parts, `${sig}=`)).toBe(false);
+  });
+
+  it('accepts only the canonical base64url spelling of the signature', async () => {
+    const sig = await signAttachmentUrl(SECRET, parts);
+    // The last of 43 characters holds two padding bits: flipping them decodes to the same bytes.
+    const last = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'.indexOf(sig.at(-1)!);
+    const sameBytes = `${sig.slice(0, -1)}${'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'[last ^ 1]}`;
+
+    expect(await verifyAttachmentSignature(SECRET, parts, sameBytes)).toBe(false);
   });
 });

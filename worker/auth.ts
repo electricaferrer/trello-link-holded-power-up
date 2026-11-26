@@ -201,6 +201,7 @@ export async function verifyAttachmentSignature(
   signature: string,
 ): Promise<boolean> {
   const bytes = base64urlToBytes(signature);
-  if (!bytes) return false;
+  // Only the canonical spelling: no padding, no alternative trailing bits.
+  if (!bytes || bytesToBase64url(bytes) !== signature) return false;
   return crypto.subtle.verify('HMAC', await attachmentKey(secret, 'verify'), bytes, attachmentSigningInput(parts));
 }

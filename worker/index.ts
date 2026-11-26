@@ -1,4 +1,4 @@
-import { bearerToken, verifyTrelloJwt } from './auth';
+import { bearerToken, signAttachmentUrl, verifyAttachmentSignature, verifyTrelloJwt } from './auth';
 import { buildDocumentUrl } from './holded-v2';
 import {
   INTERNAL_API_BASE,
@@ -15,7 +15,12 @@ interface Env {
   TRELLO_POWERUP_ID?: string;
   /** The only browser origin allowed by CORS: the Power-Up's Pages site (wrangler.toml [vars]). */
   ALLOWED_ORIGIN?: string;
+  /** HMAC secret that signs attachment binary URLs. */
+  ATTACHMENT_URL_SECRET?: string;
 }
+
+/** Lifetime of a signed attachment URL. */
+const ATTACHMENT_URL_TTL_S = 15 * 60;
 
 /** Adds CORS headers only when the request comes from the Power-Up origin. */
 function withCors(response: Response, request: Request, env: Env): Response {
@@ -433,6 +438,10 @@ async function handleV2AttachmentList(
   if (!apiKey) {
     return jsonResponse({ error: { code: 'CONFIG', message: 'Internal API key not configured in worker' } }, 500);
   }
+  const secret = env.ATTACHMENT_URL_SECRET;
+  if (!secret) {
+    return jsonResponse({ error: { code: 'CONFIG', message: 'Attachment URL secret not configured in worker' } }, 500);
+  }
 
   try {
     const page = await internalApiGet<InternalAttachmentPage>(
@@ -441,9 +450,10 @@ async function handleV2AttachmentList(
       { query: { cursor: url.searchParams.get('cursor') } },
     );
     const basePath = attachmentProxyPath(route.type, route.documentId);
-    const items = (page.items ?? [])
+    const exp = Math.floor(Date.now() / 1000) + ATTACHMENT_URL_TTL_S;
+    const items = await Promise.all((page.items ?? [])
       .filter((item) => item && typeof item.id === 'string')
-      .map((item) => {
+      .map(async (item) => {
         const name = typeof item.name === 'string' && item.name.trim()
           ? item.name.trim()
           : 'Adjunto';
@@ -455,6 +465,13 @@ async function handleV2AttachmentList(
         ) {
           params.set('source', item.downloadUrl);
         }
+        params.set('exp', String(exp));
+        params.set('sig', await signAttachmentUrl(secret, {
+          type: route.type,
+          documentId: route.documentId,
+          attachmentId: item.id,
+          exp,
+        }));
         return {
           id: item.id,
           name,
@@ -465,7 +482,7 @@ async function handleV2AttachmentList(
           ...(typeof item.createdAt === 'string' ? { createdAt: item.createdAt } : {}),
           url: `${basePath}/${encodeURIComponent(item.id)}?${params.toString()}`,
         };
-      });
+      }));
     return jsonResponse({
       items,
       hasMore: Boolean(page.hasMore),
@@ -486,11 +503,39 @@ function safeAttachmentFilename(value: string | null): string {
   return (name || 'adjunto').slice(0, 180);
 }
 
+/** The binary URL must carry an unexpired `exp` and its `sig` from the attachment list. */
+async function hasValidAttachmentSignature(
+  url: URL,
+  route: NonNullable<ReturnType<typeof attachmentRoute>>,
+  secret: string,
+): Promise<boolean> {
+  const exp = url.searchParams.get('exp') ?? '';
+  const sig = url.searchParams.get('sig') ?? '';
+  if (!route.attachmentId || !/^\d{1,12}$/.test(exp) || !sig) return false;
+  if (Number(exp) <= Math.floor(Date.now() / 1000)) return false;
+  return verifyAttachmentSignature(secret, {
+    type: route.type,
+    documentId: route.documentId,
+    attachmentId: route.attachmentId,
+    exp: Number(exp),
+  }, sig);
+}
+
 async function handleV2AttachmentBinary(
   url: URL,
   env: Env,
   route: NonNullable<ReturnType<typeof attachmentRoute>>,
 ): Promise<Response> {
+  const secret = env.ATTACHMENT_URL_SECRET;
+  if (!secret) {
+    return jsonResponse({ error: { code: 'CONFIG', message: 'Attachment URL secret not configured in worker' } }, 500);
+  }
+  if (!(await hasValidAttachmentSignature(url, route, secret))) {
+    return jsonResponse({
+      error: { code: 'FORBIDDEN', message: 'El enlace del adjunto ha caducado o no es válido.' },
+    }, 403);
+  }
+
   const apiKey = env.EF_INTERNAL_API_KEY;
   if (!apiKey || !route.attachmentId) {
     return jsonResponse({ error: { code: 'CONFIG', message: 'Internal API key not configured in worker' } }, 500);
