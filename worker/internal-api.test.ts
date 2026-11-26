@@ -4,6 +4,7 @@ import {
   InternalApiError,
   internalApiGet,
   internalApiPost,
+  internalApiResponse,
 } from './internal-api';
 
 const KEY = 'efk_keyid_supersecret';
@@ -116,5 +117,33 @@ describe('internal API client', () => {
     expect(error.code).toBe('INVALID_REQUEST');
     expect(error.detail).toBe('vatnumber already exists');
     expect(JSON.stringify(error)).not.toContain(KEY);
+  });
+
+  it('identifies the proxy as trello-power-up/1.1.0 on JSON reads and writes', async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => jsonResponse({ id: 'contact-1' }));
+
+    await internalApiGet('/contacts/contact-1', KEY, { fetchImpl });
+    await internalApiPost('/contacts', KEY, { name: 'X' }, 'idem-1', { fetchImpl });
+
+    for (const [, init] of fetchImpl.mock.calls) {
+      expect(init.headers).toMatchObject({
+        Authorization: `Bearer ${KEY}`,
+        Accept: 'application/json',
+        'X-EF-Client': 'trello-power-up/1.1.0',
+      });
+    }
+    expect(fetchImpl.mock.calls[1][1].headers).toMatchObject({ 'Idempotency-Key': 'idem-1' });
+  });
+
+  it('identifies the proxy on binary attachment downloads too, keeping their Accept', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('bytes', { headers: { 'Content-Type': 'image/png' } }));
+
+    await internalApiResponse('/waybills/wb-1/attachments/foto.png', KEY, { fetchImpl, accept: 'image/*' });
+
+    expect(fetchImpl.mock.calls[0][1].headers).toEqual({
+      Authorization: `Bearer ${KEY}`,
+      Accept: 'image/*',
+      'X-EF-Client': 'trello-power-up/1.1.0',
+    });
   });
 });

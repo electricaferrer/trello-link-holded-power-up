@@ -313,6 +313,7 @@ describe('Worker /v2 internal-API document routes', () => {
         headers: {
           Accept: 'application/octet-stream',
           Authorization: 'Bearer efk_test',
+          'X-EF-Client': 'trello-power-up/1.1.0',
         },
       }),
     );

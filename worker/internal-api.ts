@@ -1,4 +1,9 @@
+import { version } from '../package.json';
+
 export const INTERNAL_API_BASE = 'https://api.app.electricaferrer.es/internal/v1';
+
+/** How the proxy identifies itself to the internal API (`X-EF-Client: <client>/<version>`). */
+export const EF_CLIENT = `trello-power-up/${version}`;
 
 /** Default per-request timeout. The internal API reads from a synchronized D1 model. */
 export const INTERNAL_API_TIMEOUT_MS = 15_000;
@@ -63,6 +68,15 @@ function classifyStatus(status: number, envelopeCode: string | undefined): { cod
   }
 }
 
+/** Headers of every internal-API call: bearer key, Accept and the client identity. */
+function baseHeaders(apiKey: string, accept = 'application/json'): Record<string, string> {
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    Accept: accept,
+    'X-EF-Client': EF_CLIENT,
+  };
+}
+
 function buildUrl(path: string, query?: InternalRequestOptions['query']): string {
   const url = new URL(`${INTERNAL_API_BASE}${path}`);
   if (query) {
@@ -85,10 +99,7 @@ export async function internalApiRequest<T>(
   const timeoutMs = options.timeoutMs ?? INTERNAL_API_TIMEOUT_MS;
   const signal = options.signal ?? AbortSignal.timeout(timeoutMs);
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${apiKey}`,
-    Accept: 'application/json',
-  };
+  const headers = baseHeaders(apiKey);
   if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
 
   let bodyText: string | undefined;
@@ -157,10 +168,7 @@ export async function internalApiResponse(
   try {
     response = await fetchImpl(buildUrl(path, options.query), {
       method: options.method ?? 'GET',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: options.accept ?? 'application/octet-stream',
-      },
+      headers: baseHeaders(apiKey, options.accept ?? 'application/octet-stream'),
       signal,
     });
   } catch (err) {
