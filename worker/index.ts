@@ -1,3 +1,4 @@
+import { bearerToken, signAttachmentUrl, verifyAttachmentSignature, verifyTrelloJwt } from './auth';
 import { buildDocumentUrl } from './holded-v2';
 import {
   INTERNAL_API_BASE,
@@ -10,13 +11,29 @@ import {
 interface Env {
   EF_INTERNAL_API_KEY?: string;
   REPORT_WEBHOOK_TOKEN?: string;
+  /** Trello Power-Up id that every JWT must carry as `idPlugin` (wrangler.toml [vars]). */
+  TRELLO_POWERUP_ID?: string;
+  /** The only browser origin allowed by CORS: the Power-Up's Pages site (wrangler.toml [vars]). */
+  ALLOWED_ORIGIN?: string;
+  /** HMAC secret that signs attachment binary URLs. */
+  ATTACHMENT_URL_SECRET?: string;
 }
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-};
+/** Lifetime of a signed attachment URL. */
+const ATTACHMENT_URL_TTL_S = 15 * 60;
+
+/** Adds CORS headers only when the request comes from the Power-Up origin. */
+function withCors(response: Response, request: Request, env: Env): Response {
+  const headers = new Headers(response.headers);
+  headers.append('Vary', 'Origin');
+  const origin = request.headers.get('Origin');
+  if (env.ALLOWED_ORIGIN && origin === env.ALLOWED_ORIGIN) {
+    headers.set('Access-Control-Allow-Origin', origin);
+    headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  }
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
 
 const REPORT_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbxIRCGF-J5lJp4JtmIIUSxF4P0ZbwVSH8NMLZkYO47OQk3-yIcNpqrlF8SqA488eZLo/exec';
 const REPORT_WEBHOOK_TIMEOUT_MS = 30_000;
@@ -42,7 +59,7 @@ const REPORT_INVOICE_STATUSES = ['not_invoiced', 'invoiced', 'all'] as const;
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
   });
 }
 
@@ -211,7 +228,8 @@ async function enrichDocumentCreationMetadata(
   documentType: 'sales-order' | 'purchase-order' | 'waybill' | 'estimate' | 'invoice',
 ): Promise<Array<Record<string, any>>> {
   return Promise.all(items.map(async (item) => {
-    if (!item.id || (typeof item.createdAt === 'string' && typeof item.createdBy === 'string')) {
+    // The UI only shows createdBy: a list that already brings it needs no events call.
+    if (!item.id || typeof item.createdBy === 'string') {
       return item;
     }
 
@@ -421,6 +439,10 @@ async function handleV2AttachmentList(
   if (!apiKey) {
     return jsonResponse({ error: { code: 'CONFIG', message: 'Internal API key not configured in worker' } }, 500);
   }
+  const secret = env.ATTACHMENT_URL_SECRET;
+  if (!secret) {
+    return jsonResponse({ error: { code: 'CONFIG', message: 'Attachment URL secret not configured in worker' } }, 500);
+  }
 
   try {
     const page = await internalApiGet<InternalAttachmentPage>(
@@ -429,9 +451,10 @@ async function handleV2AttachmentList(
       { query: { cursor: url.searchParams.get('cursor') } },
     );
     const basePath = attachmentProxyPath(route.type, route.documentId);
-    const items = (page.items ?? [])
+    const exp = Math.floor(Date.now() / 1000) + ATTACHMENT_URL_TTL_S;
+    const items = await Promise.all((page.items ?? [])
       .filter((item) => item && typeof item.id === 'string')
-      .map((item) => {
+      .map(async (item) => {
         const name = typeof item.name === 'string' && item.name.trim()
           ? item.name.trim()
           : 'Adjunto';
@@ -443,6 +466,13 @@ async function handleV2AttachmentList(
         ) {
           params.set('source', item.downloadUrl);
         }
+        params.set('exp', String(exp));
+        params.set('sig', await signAttachmentUrl(secret, {
+          type: route.type,
+          documentId: route.documentId,
+          attachmentId: item.id,
+          exp,
+        }));
         return {
           id: item.id,
           name,
@@ -453,7 +483,7 @@ async function handleV2AttachmentList(
           ...(typeof item.createdAt === 'string' ? { createdAt: item.createdAt } : {}),
           url: `${basePath}/${encodeURIComponent(item.id)}?${params.toString()}`,
         };
-      });
+      }));
     return jsonResponse({
       items,
       hasMore: Boolean(page.hasMore),
@@ -474,11 +504,40 @@ function safeAttachmentFilename(value: string | null): string {
   return (name || 'adjunto').slice(0, 180);
 }
 
+/** The binary URL must carry an unexpired `exp` and its `sig` from the attachment list. */
+async function hasValidAttachmentSignature(
+  url: URL,
+  route: NonNullable<ReturnType<typeof attachmentRoute>>,
+  secret: string,
+): Promise<boolean> {
+  const exp = url.searchParams.get('exp') ?? '';
+  const sig = url.searchParams.get('sig') ?? '';
+  // Canonical digits only, so the checked exp is exactly the signed one.
+  if (!route.attachmentId || !/^[1-9]\d{0,11}$/.test(exp) || !sig) return false;
+  if (Number(exp) <= Math.floor(Date.now() / 1000)) return false;
+  return verifyAttachmentSignature(secret, {
+    type: route.type,
+    documentId: route.documentId,
+    attachmentId: route.attachmentId,
+    exp: Number(exp),
+  }, sig);
+}
+
 async function handleV2AttachmentBinary(
   url: URL,
   env: Env,
   route: NonNullable<ReturnType<typeof attachmentRoute>>,
 ): Promise<Response> {
+  const secret = env.ATTACHMENT_URL_SECRET;
+  if (!secret) {
+    return jsonResponse({ error: { code: 'CONFIG', message: 'Attachment URL secret not configured in worker' } }, 500);
+  }
+  if (!(await hasValidAttachmentSignature(url, route, secret))) {
+    return jsonResponse({
+      error: { code: 'FORBIDDEN', message: 'El enlace del adjunto ha caducado o no es válido.' },
+    }, 403);
+  }
+
   const apiKey = env.EF_INTERNAL_API_KEY;
   if (!apiKey || !route.attachmentId) {
     return jsonResponse({ error: { code: 'CONFIG', message: 'Internal API key not configured in worker' } }, 500);
@@ -504,7 +563,6 @@ async function handleV2AttachmentBinary(
       ? 'inline'
       : 'attachment';
     const headers: Record<string, string> = {
-      ...CORS_HEADERS,
       'Content-Type': contentType,
       'Content-Disposition': `${disposition}; filename="${safeAttachmentFilename(url.searchParams.get('name'))}"`,
       'Cache-Control': 'private, no-store',
@@ -1196,44 +1254,55 @@ async function handleV2Report(request: Request, env: Env): Promise<Response> {
   return jsonResponse(normalized);
 }
 
+async function route(request: Request, env: Env): Promise<Response> {
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204 });
+  }
+
+  const url = new URL(request.url);
+  const attachment = request.method === 'GET' ? attachmentRoute(url) : null;
+
+  // Every route needs the Power-Up's Trello JWT, except the attachment binary:
+  // <img> and <a> cannot send headers, so that URL carries its own signature.
+  if (!attachment?.attachmentId) {
+    const token = bearerToken(request);
+    if (!token || !(await verifyTrelloJwt(token, env))) {
+      return jsonResponse({ error: { code: 'UNAUTHORIZED' } }, 401);
+    }
+  }
+
+  if (attachment) {
+    return attachment.attachmentId
+      ? handleV2AttachmentBinary(url, env, attachment)
+      : handleV2AttachmentList(url, env, attachment);
+  }
+  if (request.method === 'GET' && url.pathname === '/v2/documents/search') {
+    return handleV2DocumentsSearch(url, env);
+  }
+  if (request.method === 'POST' && url.pathname === '/v2/contacts') {
+    return handleV2CreateContact(request, url, env);
+  }
+  if (request.method === 'POST' && /^\/v2\/contacts\/[^/]+\/shipping-addresses$/.test(url.pathname)) {
+    return handleV2AddShippingAddress(request, url, env);
+  }
+  if (request.method === 'POST' && url.pathname === '/v2/reports') {
+    return handleV2Report(request, env);
+  }
+  if (request.method === 'GET' && url.pathname.startsWith('/v2/contacts/')) {
+    return handleV2ContactDetail(url, env);
+  }
+  if (request.method === 'GET' && url.pathname === '/contacts/search') {
+    return handleContactsSearch(url, env);
+  }
+  if (request.method === 'GET' && url.pathname === '/projects/search') {
+    return handleProjectsSearch(url, env);
+  }
+
+  return jsonResponse({ error: 'Not found' }, 404);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
-    }
-
-    const url = new URL(request.url);
-
-    if (request.method === 'GET') {
-      const route = attachmentRoute(url);
-      if (route) {
-        return route.attachmentId
-          ? handleV2AttachmentBinary(url, env, route)
-          : handleV2AttachmentList(url, env, route);
-      }
-    }
-    if (request.method === 'GET' && url.pathname === '/v2/documents/search') {
-      return handleV2DocumentsSearch(url, env);
-    }
-    if (request.method === 'POST' && url.pathname === '/v2/contacts') {
-      return handleV2CreateContact(request, url, env);
-    }
-    if (request.method === 'POST' && /^\/v2\/contacts\/[^/]+\/shipping-addresses$/.test(url.pathname)) {
-      return handleV2AddShippingAddress(request, url, env);
-    }
-    if (request.method === 'POST' && url.pathname === '/v2/reports') {
-      return handleV2Report(request, env);
-    }
-    if (request.method === 'GET' && url.pathname.startsWith('/v2/contacts/')) {
-      return handleV2ContactDetail(url, env);
-    }
-    if (request.method === 'GET' && url.pathname === '/contacts/search') {
-      return handleContactsSearch(url, env);
-    }
-    if (request.method === 'GET' && url.pathname === '/projects/search') {
-      return handleProjectsSearch(url, env);
-    }
-
-    return jsonResponse({ error: 'Not found' }, 404);
+    return withCors(await route(request, env), request, env);
   },
 };

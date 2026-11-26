@@ -146,10 +146,15 @@ trello-link-holded-power-up/
 ```bash
 echo "TU_API_KEY_INTERNA" | pnpm exec wrangler secret put EF_INTERNAL_API_KEY --name holded-proxy
 echo "TU_TOKEN_DEL_WEBHOOK" | pnpm exec wrangler secret put REPORT_WEBHOOK_TOKEN --name holded-proxy
+openssl rand -base64 32 | pnpm exec wrangler secret put ATTACHMENT_URL_SECRET --name holded-proxy
 ```
 
-`REPORT_WEBHOOK_TOKEN` es el token que utiliza el Worker para generar informes económicos. No debe
-incluirse en el frontend ni en el repositorio.
+`REPORT_WEBHOOK_TOKEN` es el token que utiliza el Worker para generar informes económicos y
+`ATTACHMENT_URL_SECRET` firma las URLs de los adjuntos. No deben incluirse en el frontend ni en el
+repositorio.
+
+Las variables `TRELLO_POWERUP_ID` (id del Power-Up cuyos JWT acepta el proxy) y `ALLOWED_ORIGIN`
+(origen de Pages, el único con CORS) están en `[vars]` de `worker/wrangler.toml`.
 
 ### 2. Desplegar el Worker
 
@@ -220,9 +225,10 @@ Además, los tags `{{ contact: ... }}` y `{{ project: ... }}` se escriben en la 
 
 ## Seguridad
 
-- El API key de Holded se almacena como **secret** en Cloudflare Workers (nunca expuesto al frontend)
-- El Worker permite GET (lectura), POST (crear contacto) y PUT (actualizar contacto)
-- CORS configurado con `Access-Control-Allow-Origin: *` (necesario para que Trello pueda llamar al worker)
+- Las claves (`EF_INTERNAL_API_KEY`, `REPORT_WEBHOOK_TOKEN`, `ATTACHMENT_URL_SECRET`) son **secrets** del Worker, nunca expuestos al frontend.
+- Cada llamada al proxy lleva el JWT de Trello del Power-Up (`t.jwt()`). El Worker lo verifica con las claves públicas de Trello y responde 401 sin él.
+- Los adjuntos se sirven con URLs firmadas que caducan a los 15 minutos, porque `<img>` y `<a>` no pueden mandar cabeceras. La tarjeta renueva la lista antes de que caduquen.
+- CORS solo para el origen del Power-Up (`ALLOWED_ORIGIN`).
 
 ## Licencia
 

@@ -1486,6 +1486,87 @@
     var HOLDED_PROXY_URL = 'https://holded-proxy.electricaferrer.workers.dev';
     var EF_APP_URL = 'https://app.electricaferrer.es';
 
+    // Mirrors src/proxy-auth.ts: every proxy call carries the Power-Up's Trello JWT
+    // (t.jwt()), reused until 60 s before its exp and renewed once after a 401.
+    var PROXY_JWT_REFRESH_MARGIN_MS = 60000;
+    var proxyJwt = null;
+    var proxyJwtRequest = null;
+    var proxyJwtSentToFrame = null;
+
+    function jwtExpiresAt(token) {
+      try {
+        var payload = String(token).split('.')[1] || '';
+        var base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+        while (base64.length % 4) base64 += '=';
+        var claims = JSON.parse(atob(base64));
+        return typeof claims.exp === 'number' ? claims.exp * 1000 : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function cachedProxyJwt() {
+      return proxyJwt && Date.now() < proxyJwt.refreshAt ? proxyJwt.token : null;
+    }
+
+    // rejectedToken: after a 401, a JWT renewed meanwhile by another call is reused.
+    function getProxyJwt(forceRefresh, rejectedToken) {
+      if (!forceRefresh && cachedProxyJwt()) return Promise.resolve(cachedProxyJwt());
+      if (proxyJwtRequest && (!forceRefresh || rejectedToken)) return proxyJwtRequest;
+      if (rejectedToken && cachedProxyJwt() && cachedProxyJwt() !== rejectedToken) {
+        return Promise.resolve(cachedProxyJwt());
+      }
+      var request = t.jwt().then(function(token) {
+        var expiresAt = jwtExpiresAt(token);
+        proxyJwt = expiresAt ? { token: token, refreshAt: expiresAt - PROXY_JWT_REFRESH_MARGIN_MS } : null;
+        sendProxyJwtToCreateContactFrame(token);
+        return token;
+      });
+      proxyJwtRequest = request;
+      var clear = function() { if (proxyJwtRequest === request) proxyJwtRequest = null; };
+      request.then(clear, clear);
+      return request;
+    }
+
+    function proxyFetch(url, init) {
+      init = init || {};
+      function send(token) {
+        var headers = Object.assign({}, init.headers, { Authorization: 'Bearer ' + token });
+        return fetch(url, Object.assign({}, init, { headers: headers }));
+      }
+      function sendWith(token) {
+        return send(token).then(function(response) {
+          return response.status === 401 ? getProxyJwt(true, token).then(send) : response;
+        });
+      }
+      // With a cached JWT the request starts right away, as it did before the JWT existed.
+      var cached = cachedProxyJwt();
+      return cached ? sendWith(cached) : getProxyJwt(false).then(sendWith);
+    }
+
+    // The embedded create-contact form has no Trello context: hand it the JWT,
+    // only to this same origin, when it loads and whenever the JWT is renewed.
+    // These notices skip a JWT the frame already has.
+    function sendProxyJwtToCreateContactFrame(token) {
+      var frame = createContactHost && createContactHost.querySelector('.create-contact-frame');
+      if (!frame || !frame.contentWindow) return;
+      if (proxyJwtSentToFrame && proxyJwtSentToFrame.frame === frame.contentWindow && proxyJwtSentToFrame.token === token) return;
+      proxyJwtSentToFrame = { frame: frame.contentWindow, token: token };
+      frame.contentWindow.postMessage({ type: 'ef-proxy-jwt', jwt: token }, window.location.origin);
+    }
+
+    // The form asked for a JWT (a 401 or a spent one). An explicit request is always
+    // answered: with the renewed JWT, even when Trello returns the same one, or with
+    // a bridge error so the form's submit fails instead of hanging.
+    function answerCreateContactFrameJwtRequest(frameWindow) {
+      proxyJwtSentToFrame = null; // getProxyJwt(true) then posts whatever JWT it gets
+      getProxyJwt(true).catch(function() {
+        var frame = createContactHost && createContactHost.querySelector('.create-contact-frame');
+        if (!frame || frame.contentWindow !== frameWindow) return;
+        frameWindow.postMessage({ type: 'ef-proxy-jwt-error' }, window.location.origin);
+      });
+    }
+
     var CONTACT_SVG = '<svg class="tag-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M384 48c8.8 0 16 7.2 16 16l0 384c0 8.8-7.2 16-16 16L96 464c-8.8 0-16-7.2-16-16L80 64c0-8.8 7.2-16 16-16l288 0zM96 0C60.7 0 32 28.7 32 64l0 384c0 35.3 28.7 64 64 64l288 0c35.3 0 64-28.7 64-64l0-384c0-35.3-28.7-64-64-64L96 0zM240 248a56 56 0 1 0 0-112 56 56 0 1 0 0 112zm-32 40c-44.2 0-80 35.8-80 80 0 8.8 7.2 16 16 16l192 0c8.8 0 16-7.2 16-16 0-44.2-35.8-80-80-80l-64 0zM512 80c0-8.8-7.2-16-16-16s-16 7.2-16 16l0 64c0 8.8 7.2 16 16 16s16-7.2 16-16l0-64zM496 192c-8.8 0-16 7.2-16 16l0 64c0 8.8 7.2 16 16 16s16-7.2 16-16l0-64c0-8.8-7.2-16-16-16zm16 144c0-8.8-7.2-16-16-16s-16 7.2-16 16l0 64c0 8.8 7.2 16 16 16s16-7.2 16-16l0-64z"/></svg>';
 
     var PROJECT_SVG = '<svg class="tag-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path d="M384 80c8.8 0 16 7.2 16 16l0 64c0 8.8-7.2 16-16 16L64 176c-8.8 0-16-7.2-16-16l0-64c0-8.8 7.2-16 16-16l320 0zM64 32C28.7 32 0 60.7 0 96l0 64c0 35.3 28.7 64 64 64l8 0 0 96c0 48.6 39.4 88 88 88l32 0 0 8c0 35.3 28.7 64 64 64l128 0c35.3 0 64-28.7 64-64l0-64c0-35.3-28.7-64-64-64l-128 0c-35.3 0-64 28.7-64 64l0 8-32 0c-22.1 0-40-17.9-40-40l0-96 264 0c35.3 0 64-28.7 64-64l0-64c0-35.3-28.7-64-64-64L64 32zM384 336c8.8 0 16 7.2 16 16l0 64c0 8.8-7.2 16-16 16l-128 0c-8.8 0-16-7.2-16-16l0-64c0-8.8 7.2-16 16-16l128 0z"/></svg>';
@@ -1633,9 +1714,13 @@
           var pending = view.previewAttachmentRequests[previewId];
           if (pending.controller) pending.controller.abort();
         });
+        Object.keys(view.previewAttachmentTimers).forEach(function(previewId) {
+          clearTimeout(view.previewAttachmentTimers[previewId]);
+        });
         view.previewAttachments = {};
         view.previewAttachmentRequests = {};
         view.previewAttachmentVisibleCounts = {};
+        view.previewAttachmentTimers = {};
       });
       documentRequestGeneration += 1;
       documentResults = {};
@@ -1658,9 +1743,10 @@
           pages: {},   // stateKey -> current page number
           cursors: {}, // stateKey -> { pageNumber: cursorToFetchThatPage } (estimates)
           previewStates: {}, // preview ID -> user-selected expanded state
-          previewAttachments: {}, // preview ID -> { path, items }
+          previewAttachments: {}, // preview ID -> { path, items, expiresAt }
           previewAttachmentRequests: {}, // preview ID -> { path, promise }
           previewAttachmentVisibleCounts: {}, // preview ID -> visible image count
+          previewAttachmentTimers: {}, // preview ID -> renewal timer of its signed URLs
           pendingTabFocus: null,
         };
       }
@@ -2180,7 +2266,7 @@
       var requestUrl = new URL(HOLDED_PROXY_URL + path);
       if (cursor) requestUrl.searchParams.set('cursor', cursor);
 
-      return fetch(requestUrl.toString(), { cache: 'no-store', signal: signal })
+      return proxyFetch(requestUrl.toString(), { cache: 'no-store', signal: signal })
         .then(function(response) {
           return response.json()
             .catch(function() { return {}; })
@@ -2193,6 +2279,100 @@
               return nextItems;
             });
         });
+    }
+
+    // The attachment list signs its binary URLs for 15 minutes (exp, sig). A list is
+    // renewed, with a new JWT, from 60 s before its earliest exp: on its own while the
+    // card stays open, and before opening a URL, showing more images or reopening it.
+    var ATTACHMENT_URL_RENEW_MARGIN_MS = 60000;
+
+    function getAttachmentListExpiresAt(items) {
+      var earliest = null;
+      (items || []).forEach(function(item) {
+        [item && item.url, item && item.thumbnailUrl].forEach(function(value) {
+          if (!value) return;
+          try {
+            var exp = Number(new URL(String(value), HOLDED_PROXY_URL).searchParams.get('exp'));
+            if (exp > 0 && (earliest === null || exp * 1000 < earliest)) earliest = exp * 1000;
+          } catch (_) {}
+        });
+      });
+      return earliest;
+    }
+
+    function isAttachmentListStale(entry) {
+      return Boolean(entry && entry.expiresAt &&
+        Date.now() >= entry.expiresAt - ATTACHMENT_URL_RENEW_MARGIN_MS);
+    }
+
+    function getAttachmentUrlPath(url) {
+      return String(url || '').split(/[?#]/)[0];
+    }
+
+    function forgetDocumentAttachments(view, previewId) {
+      clearTimeout(view.previewAttachmentTimers[previewId]);
+      delete view.previewAttachmentTimers[previewId];
+      delete view.previewAttachments[previewId];
+    }
+
+    function scheduleDocumentAttachmentRenewal(view, previewId) {
+      var entry = view.previewAttachments[previewId];
+      clearTimeout(view.previewAttachmentTimers[previewId]);
+      delete view.previewAttachmentTimers[previewId];
+      if (!entry || !entry.expiresAt) return;
+      view.previewAttachmentTimers[previewId] = setTimeout(function() {
+        delete view.previewAttachmentTimers[previewId];
+        if (view.previewAttachments[previewId] !== entry) return;
+        renewDocumentAttachments(view, previewId).catch(function() {});
+      }, Math.max(0, entry.expiresAt - ATTACHMENT_URL_RENEW_MARGIN_MS - Date.now()));
+    }
+
+    // Drops the cached list and loads it again. Resolves with the new items, or null
+    // when the preview is closed: it then loads when it is opened again.
+    function renewDocumentAttachments(view, previewId) {
+      var entry = view.previewAttachments[previewId];
+      var path = entry && entry.path;
+      forgetDocumentAttachments(view, previewId);
+      var preview = document.getElementById(previewId);
+      var slot = preview && preview.querySelector('.document-preview-attachments-slot');
+      if (!path || path === 'inline' || !slot) return Promise.resolve(null);
+      slot.setAttribute('data-state', 'idle');
+      if (preview.hasAttribute('hidden')) {
+        slot.innerHTML = '';
+        return Promise.resolve(null);
+      }
+      preview.setAttribute('data-static-motion', 'true');
+      loadDocumentAttachments(preview, path, view, previewId);
+      var pending = view.previewAttachmentRequests[previewId];
+      return pending ? pending.promise : Promise.resolve(null);
+    }
+
+    // Opening an expired URL would get a 403: open the tab within the click, so the
+    // browser allows it, and send it to the renewed URL of the same attachment.
+    function openRenewedAttachment(event, link, view) {
+      var preview = link.closest('.document-preview');
+      var entry = preview && view.previewAttachments[preview.id];
+      if (!isAttachmentListStale(entry)) return;
+      event.preventDefault();
+      var linkPath = getAttachmentUrlPath(link.getAttribute('href'));
+      var opened = window.open('', '_blank');
+      if (opened) {
+        try { opened.opener = null; } catch (_) {}
+      }
+      renewDocumentAttachments(view, preview.id).then(function(items) {
+        var renewed = getPreviewAttachments({ attachments: items || [] }).filter(function(attachment) {
+          return getAttachmentUrlPath(attachment.url) === linkPath;
+        })[0];
+        if (!renewed) {
+          if (opened) opened.close();
+        } else if (opened) {
+          opened.location.href = renewed.url;
+        } else {
+          window.open(renewed.url, '_blank', 'noopener');
+        }
+      }).catch(function() {
+        if (opened) opened.close();
+      });
     }
 
     function renderDocumentAttachmentItems(slot, attachments, view, previewId) {
@@ -2213,6 +2393,16 @@
       container.setAttribute('data-load-more-bound', 'true');
       container.addEventListener('click', function(event) {
         var target = event.target;
+        var attachmentLink = target && target.closest
+          ? target.closest('.document-preview-attachments-slot a[href]')
+          : null;
+        if (attachmentLink && container.contains(attachmentLink)) {
+          openRenewedAttachment(event, attachmentLink, getDocumentsView({
+            contactId: container.getAttribute('data-contact-id') || '',
+            projectId: container.getAttribute('data-project-id') || '',
+          }));
+          return;
+        }
         var button = target && target.closest
           ? target.closest('.document-preview-load-more')
           : null;
@@ -2232,6 +2422,10 @@
         var visibleCount = (view.previewAttachmentVisibleCounts[previewId] || ATTACHMENT_BATCH_SIZE) +
           ATTACHMENT_BATCH_SIZE;
         view.previewAttachmentVisibleCounts[previewId] = visibleCount;
+        if (cached.path !== 'inline' && isAttachmentListStale(cached)) {
+          renewDocumentAttachments(view, previewId).catch(function() {});
+          return;
+        }
         var slot = preview.querySelector('.document-preview-attachments-slot');
         if (slot) {
           renderDocumentAttachmentItems(slot, cached.items, view, previewId);
@@ -2268,10 +2462,16 @@
 
     function loadDocumentAttachments(preview, path, view, previewId) {
       var slot = preview.querySelector('.document-preview-attachments-slot');
-      if (!slot || slot.getAttribute('data-state') === 'loading' ||
+      if (!slot) return;
+      var cached = view.previewAttachments[previewId];
+      if (cached && cached.path === path && isAttachmentListStale(cached)) {
+        forgetDocumentAttachments(view, previewId);
+        cached = null;
+        if (slot.getAttribute('data-state') === 'loaded') slot.setAttribute('data-state', 'idle');
+      }
+      if (slot.getAttribute('data-state') === 'loading' ||
         slot.getAttribute('data-state') === 'loaded') return;
 
-      var cached = view.previewAttachments[previewId];
       if (cached && cached.path === path) {
         preview.setAttribute('data-static-motion', 'true');
         renderDocumentAttachmentItems(slot, cached.items, view, previewId);
@@ -2302,7 +2502,12 @@
         .then(function(attachments) {
           if (view.previewAttachmentRequests[previewId] === pending) {
             delete view.previewAttachmentRequests[previewId];
-            view.previewAttachments[previewId] = { path: path, items: attachments };
+            view.previewAttachments[previewId] = {
+              path: path,
+              items: attachments,
+              expiresAt: getAttachmentListExpiresAt(attachments),
+            };
+            scheduleDocumentAttachmentRenewal(view, previewId);
           }
           var resolved = view.previewAttachments[previewId];
           if (resolved && resolved.path === path) {
@@ -2618,7 +2823,7 @@
       documentRequestControllers[pageKey] = controller;
       delete documentErrors[pageKey];
 
-      fetch(HOLDED_PROXY_URL + '/v2/documents/search?' + params.toString(), { cache: 'no-store', signal: controller.signal })
+      proxyFetch(HOLDED_PROXY_URL + '/v2/documents/search?' + params.toString(), { cache: 'no-store', signal: controller.signal })
         .then(function(response) {
           return response.json()
             .catch(function() { return {}; })
@@ -2845,7 +3050,7 @@
       if (!data.contactId) return;
       var contactId = data.contactId;
 
-      fetch(HOLDED_PROXY_URL + '/v2/contacts/' + encodeURIComponent(contactId))
+      proxyFetch(HOLDED_PROXY_URL + '/v2/contacts/' + encodeURIComponent(contactId))
         .then(function(response) {
           if (!response.ok) throw new Error('Holded API error: ' + response.status);
           return response.json();
@@ -2946,6 +3151,11 @@
       }
       renderCreateContactShell('Crear contacto',
         '<iframe class="create-contact-frame" title="Crear contacto" src="./src/popups/create-contact.html?embedded=1"></iframe>');
+      createContactHost.querySelector('.create-contact-frame').addEventListener('load', function() {
+        // contentWindow survives navigation: anything posted before this load may be lost.
+        proxyJwtSentToFrame = null;
+        getProxyJwt(false).then(sendProxyJwtToCreateContactFrame).catch(function() {});
+      });
     }
 
     // t.popup only reads clientX/clientY from mouseEvent to anchor the popup, so a
@@ -2976,6 +3186,7 @@
       var frame = createContactHost.querySelector('.create-contact-frame');
       if (!frame || e.source !== frame.contentWindow || e.origin !== window.location.origin) return;
       var message = e.data || {};
+      if (message.type === 'ef-proxy-jwt-request') answerCreateContactFrameJwtRequest(frame.contentWindow);
       if (message.type === 'holded:contact-form-height' && message.height > 0) {
         frame.style.height = Math.ceil(message.height) + 'px';
         t.sizeTo(contentDiv).catch(function() {});

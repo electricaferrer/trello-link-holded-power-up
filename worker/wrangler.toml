@@ -1,3 +1,9 @@
 name = "holded-proxy"
 main = "index.ts"
 compatibility_date = "2025-01-01"
+
+[vars]
+# Trello Power-Up whose JWTs (t.jwt()) the proxy accepts.
+TRELLO_POWERUP_ID = "69aa97fea83ff5789f8409f7"
+# Only browser origin that receives CORS headers: the Power-Up's Pages site.
+ALLOWED_ORIGIN = "https://trello-link-holded-power-up.pages.dev"

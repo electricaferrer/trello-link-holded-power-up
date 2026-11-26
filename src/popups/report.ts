@@ -142,7 +142,7 @@ async function loadEstimates() {
   }
 
   try {
-    const result = await searchReportEstimates(selectedCustomer.id, selectedProject?.id);
+    const result = await searchReportEstimates(t, selectedCustomer.id, selectedProject?.id);
     if (generation !== estimateLoadGeneration) return;
     estimates = result.results || [];
     renderEstimateOptions();
@@ -192,7 +192,7 @@ async function doCustomerSearch() {
     return;
   }
   try {
-    const result = await searchContacts(query);
+    const result = await searchContacts(t, query);
     renderCustomerResults(result.results);
   } catch (err) {
     showMessage(`No se pudieron buscar clientes: ${escapeHtml((err as Error).message)}`, 'error');
@@ -233,7 +233,7 @@ async function doProjectSearch() {
   }
   selectedProject = null;
   try {
-    const result = await searchProjects(query);
+    const result = await searchProjects(t, query);
     renderProjectResults(result.results);
   } catch (err) {
     showMessage(`No se pudieron buscar proyectos: ${escapeHtml((err as Error).message)}`, 'error');
@@ -310,7 +310,7 @@ async function submitReport(event: SubmitEvent) {
       additionalEmails,
       filters: readFilters(),
     });
-    const result = await generateReport(request);
+    const result = await generateReport(t, request);
     renderSuccess(result);
   } catch (err) {
     showMessage(escapeHtml((err as Error).message || 'No se pudo generar el informe.'), 'error');

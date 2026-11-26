@@ -1,10 +1,11 @@
 import type { HoldedContact, HoldedProject, CreateContactPayload, CreateContactResponse } from './types';
 import { HOLDED_PROXY_URL } from './config';
+import { proxyFetch, type JwtSource } from './proxy-auth';
 
 const PROXY_BASE = HOLDED_PROXY_URL;
 
-async function fetchHolded<T>(url: string): Promise<T> {
-  const response = await fetch(url);
+async function fetchHolded<T>(auth: JwtSource, url: string): Promise<T> {
+  const response = await proxyFetch(auth, url);
   const body = await response.text();
   if (!response.ok) {
     let msg = `Holded API error: ${response.status}`;
@@ -23,15 +24,15 @@ export interface ContactSearchResult {
   results: HoldedContact[];
 }
 
-export async function searchContacts(query: string): Promise<ContactSearchResult> {
+export async function searchContacts(auth: JwtSource, query: string): Promise<ContactSearchResult> {
   const params = new URLSearchParams();
   if (query) params.set('q', query);
-  return fetchHolded<ContactSearchResult>(`${PROXY_BASE}/contacts/search?${params}`);
+  return fetchHolded<ContactSearchResult>(auth, `${PROXY_BASE}/contacts/search?${params}`);
 }
 
 /** Full contact detail (shipping/bill addresses, custom fields) from the internal API. */
-export async function getContactDetail(id: string): Promise<HoldedContact> {
-  return fetchHolded<HoldedContact>(`${PROXY_BASE}/v2/contacts/${encodeURIComponent(id)}`);
+export async function getContactDetail(auth: JwtSource, id: string): Promise<HoldedContact> {
+  return fetchHolded<HoldedContact>(auth, `${PROXY_BASE}/v2/contacts/${encodeURIComponent(id)}`);
 }
 
 export interface ProjectSearchResult {
@@ -39,10 +40,10 @@ export interface ProjectSearchResult {
   results: HoldedProject[];
 }
 
-export async function searchProjects(query: string): Promise<ProjectSearchResult> {
+export async function searchProjects(auth: JwtSource, query: string): Promise<ProjectSearchResult> {
   const params = new URLSearchParams();
   if (query) params.set('q', query);
-  return fetchHolded<ProjectSearchResult>(`${PROXY_BASE}/projects/search?${params}`);
+  return fetchHolded<ProjectSearchResult>(auth, `${PROXY_BASE}/projects/search?${params}`);
 }
 
 function omitEmpty<T extends Record<string, unknown>>(value: T): T {
@@ -100,10 +101,11 @@ function toInternalContactPayload(payload: CreateContactPayload): Record<string,
 }
 
 export async function createContact(
+  auth: JwtSource,
   payload: CreateContactPayload,
   idempotencyKey: string,
 ): Promise<CreateContactResponse> {
-  const response = await fetch(`${PROXY_BASE}/v2/contacts?idempotencyKey=${encodeURIComponent(idempotencyKey)}`, {
+  const response = await proxyFetch(auth, `${PROXY_BASE}/v2/contacts?idempotencyKey=${encodeURIComponent(idempotencyKey)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(toInternalContactPayload(payload)),
@@ -128,11 +130,13 @@ export interface NewShippingAddress {
 
 /** Appends a shipping address to an existing contact through the internal API. */
 export async function addShippingAddress(
+  auth: JwtSource,
   contactId: string,
   newAddr: NewShippingAddress,
   idempotencyKey: string,
 ): Promise<void> {
-  const response = await fetch(
+  const response = await proxyFetch(
+    auth,
     `${PROXY_BASE}/v2/contacts/${encodeURIComponent(contactId)}/shipping-addresses?idempotencyKey=${encodeURIComponent(idempotencyKey)}`,
     {
       method: 'POST',

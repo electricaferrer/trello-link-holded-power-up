@@ -42,55 +42,73 @@ function renderResults(contacts: HoldedContact[], query: string) {
     addCreateButton();
     return;
   }
-  resultsDiv.innerHTML = contacts
-    .map(
-      (c) => {
-        const initials = c.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-        return `
-    <div class="result-item" data-id="${c.id}" data-name="${c.name}">
-      <div class="result-avatar">${initials}</div>
-      <div class="result-info">
-        <div class="result-name">${c.name}</div>
-        ${c.code || c.email ? `<div class="result-email">${[c.code, c.email].filter(Boolean).join(' · ')}</div>` : ''}
-      </div>
-    </div>`;
-      }
-    )
-    .join('');
+  // CRM values go in as text (textContent, dataset), never as HTML.
+  resultsDiv.replaceChildren(...contacts.map((contact) => {
+    const item = createResultItem(contact.name, [contact.code, contact.email].filter(Boolean).join(' · '));
+    item.dataset.id = contact.id;
+    item.dataset.name = contact.name;
+    item.addEventListener('click', (event) => selectContact(contact, event));
+    return item;
+  }));
 
   if (contacts.length <= 3) {
     addCreateButton();
   }
+}
 
-  resultsDiv.querySelectorAll<HTMLElement>('.result-item').forEach((el) => {
-    el.addEventListener('click', async (event) => {
-      const id = el.dataset.id!;
-      const summary = contacts.find((c) => c.id === id)!;
-      const contactName = formatSpanishTextCase(summary.name);
+function createResultItem(name: string, subtitle: string): HTMLDivElement {
+  const item = document.createElement('div');
+  item.className = 'result-item';
+  const avatar = document.createElement('div');
+  avatar.className = 'result-avatar';
+  avatar.textContent = name.split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+  const info = document.createElement('div');
+  info.className = 'result-info';
+  const nameEl = document.createElement('div');
+  nameEl.className = 'result-name';
+  nameEl.textContent = name;
+  info.append(nameEl);
+  if (subtitle) {
+    const subtitleEl = document.createElement('div');
+    subtitleEl.className = 'result-email';
+    subtitleEl.textContent = subtitle;
+    info.append(subtitleEl);
+  }
+  item.append(avatar, info);
+  return item;
+}
 
-      // Search returns summaries; the addresses come from the full detail. If that
-      // fetch fails, stop — linking without it could drop the contact's address.
-      // Show a retryable error and let the user click the contact again.
-      clearSelectionError();
-      let contact: HoldedContact;
-      try {
-        contact = await getContactDetail(id);
-      } catch (err) {
-        console.error('Holded: error loading contact detail', err);
-        showSelectionError('No se pudo cargar el contacto. Pulsa de nuevo para reintentar.');
-        return;
-      }
+async function selectContact(summary: HoldedContact, event: MouseEvent) {
+  const contactName = formatSpanishTextCase(summary.name);
 
-      const pending = buildPendingContactSelection(contact, contactName);
-      await savePendingContactSelection(t, pending);
-      t.popup({
-        title: 'Seleccionar dirección',
-        url: './select-address.html',
-        height: 300,
-        mouseEvent: event,
-      });
-    });
+  // Search returns summaries; the addresses come from the full detail. If that
+  // fetch fails, stop: linking without it could drop the contact's address.
+  // Show a retryable error and let the user click the contact again.
+  clearSelectionError();
+  let contact: HoldedContact;
+  try {
+    contact = await getContactDetail(t, summary.id);
+  } catch (err) {
+    console.error('Holded: error loading contact detail', err);
+    showSelectionError('No se pudo cargar el contacto. Pulsa de nuevo para reintentar.');
+    return;
+  }
+
+  const pending = buildPendingContactSelection(contact, contactName);
+  await savePendingContactSelection(t, pending);
+  t.popup({
+    title: 'Seleccionar dirección',
+    url: './select-address.html',
+    height: 300,
+    mouseEvent: event,
   });
+}
+
+function showSearchError(err: unknown) {
+  const error = document.createElement('div');
+  error.className = 'error';
+  error.textContent = `Error: ${(err as Error).message}`;
+  resultsDiv.replaceChildren(error);
 }
 
 async function doSearch() {
@@ -102,10 +120,10 @@ async function doSearch() {
 
   resultsDiv.innerHTML = '<div class="loading">Buscando...</div>';
   try {
-    const { results } = await searchContacts(query);
+    const { results } = await searchContacts(t, query);
     renderResults(results, query);
   } catch (err) {
-    resultsDiv.innerHTML = `<div class="error">Error: ${(err as Error).message}</div>`;
+    showSearchError(err);
   }
 }
 

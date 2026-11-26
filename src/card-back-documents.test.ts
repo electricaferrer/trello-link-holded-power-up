@@ -2,7 +2,8 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { JSDOM } from 'jsdom';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { createParentJwtSource, proxyFetch } from './proxy-auth';
 
 const PAGE_SIZE = 10;
 const TYPE_TO_KEY = {
@@ -48,6 +49,15 @@ function buildDocumentsPage(documents, requestUrl, options) {
   return body;
 }
 
+function base64url(value) {
+  return Buffer.from(value).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// A Trello-shaped JWT whose exp the card-back can read (it never checks the signature).
+function fakeTrelloJwt(id, expSeconds = Math.floor(Date.now() / 1000) + 900) {
+  return `${base64url(JSON.stringify({ alg: 'RS256' }))}.${base64url(JSON.stringify({ exp: expSeconds, id }))}.sig-${id}`;
+}
+
 function loadCardBack(documents, options = {}) {
   const html = readFileSync(resolve(__dirname, '../public/card-back.html'), 'utf8')
     .replace('<script src="https://p.trellocdn.com/power-up.min.js"></script>', '');
@@ -55,10 +65,17 @@ function loadCardBack(documents, options = {}) {
   const requests = [];
   const setCalls = [];
   const popupCalls = [];
-  const authState = { authorizeCalls: 0 };
+  const authState = { authorizeCalls: 0, jwtCalls: 0 };
+  // t.jwt() hands out jwt-1, jwt-2… unless the test gives its own tokens.
+  const jwtTokens = options.jwtTokens || Array.from({ length: 20 }, (_, i) => fakeTrelloJwt(`jwt-${i + 1}`));
+  const rejectedJwts = new Set(options.rejectedJwts || []);
   let renderCallback;
   let nextScheduledRefreshId = 1;
   const scheduledRefreshes = new Map();
+  // Timers of a minute or more (signed attachment URL renewals) run only when the test says.
+  const longTimers = new Map();
+  const openCalls = [];
+  let attachmentListCalls = 0;
   let restApiAuthorized = options.authorized !== false;
   let cardData = {
     contactId: options.contactId === null ? undefined : 'contact-1',
@@ -74,6 +91,12 @@ function loadCardBack(documents, options = {}) {
     runScripts: 'dangerously',
     pretendToBeVisual: true,
     beforeParse(window) {
+      if (options.clock) window.Date.now = () => options.clock.ms;
+      window.open = (...args) => {
+        const opened = { opener: window, location: { href: '' }, closed: false, close() { this.closed = true; } };
+        openCalls.push({ args, opened });
+        return opened;
+      };
       const nativeSetTimeout = window.setTimeout.bind(window);
       const nativeClearTimeout = window.clearTimeout.bind(window);
       window.setTimeout = (callback, delay, ...args) => {
@@ -82,16 +105,28 @@ function loadCardBack(documents, options = {}) {
           scheduledRefreshes.set(id, () => callback(...args));
           return id;
         }
+        if (delay >= 60_000) {
+          const id = nextScheduledRefreshId++;
+          longTimers.set(id, { delay, run: () => callback(...args) });
+          return id;
+        }
         return nativeSetTimeout(callback, delay, ...args);
       };
       window.clearTimeout = (id) => {
-        if (!scheduledRefreshes.delete(id)) nativeClearTimeout(id);
+        if (!scheduledRefreshes.delete(id) && !longTimers.delete(id)) nativeClearTimeout(id);
       };
       window.confirm = () => options.confirmUnlink === true;
       window.fetch = async (url, init) => {
         const requestUrl = String(url);
         urls.push(requestUrl);
         requests.push({ url: requestUrl, init });
+        const authorization = init?.headers?.Authorization || '';
+        if (rejectedJwts.has(authorization.replace(/^Bearer /, ''))) {
+          return new Response(JSON.stringify({ error: { code: 'UNAUTHORIZED' } }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
 
         if (requestUrl.includes('/v2/documents/search')) {
           const responseBody = buildDocumentsPage(documents, requestUrl, options);
@@ -114,8 +149,11 @@ function loadCardBack(documents, options = {}) {
           if (options.attachmentDelayMs) {
             await new Promise((r) => setTimeout(r, options.attachmentDelayMs));
           }
+          attachmentListCalls += 1;
           return new Response(JSON.stringify({
-            items: options.attachments || [],
+            items: typeof options.attachments === 'function'
+              ? options.attachments(attachmentListCalls)
+              : options.attachments || [],
             hasMore: false,
             nextCursor: null,
           }), {
@@ -158,6 +196,15 @@ function loadCardBack(documents, options = {}) {
           closePopup: () => undefined,
           sizeTo: () => Promise.resolve(),
           render: (callback) => { renderCallback = callback; },
+          jwt: () => {
+            if (options.jwt) {
+              authState.jwtCalls += 1;
+              return options.jwt(authState.jwtCalls);
+            }
+            const token = jwtTokens[Math.min(authState.jwtCalls, jwtTokens.length - 1)];
+            authState.jwtCalls += 1;
+            return Promise.resolve(token);
+          },
         }),
       };
     },
@@ -172,6 +219,14 @@ function loadCardBack(documents, options = {}) {
     pluginData,
     authState,
     rerender: () => renderCallback?.(),
+    openCalls,
+    longTimers,
+    runLongTimers: () => {
+      const due = [...longTimers.entries()];
+      longTimers.clear();
+      for (const [, timer] of due) timer.run();
+      return due.map(([, timer]) => timer.delay);
+    },
     runScheduledDocumentRefresh: () => {
       const next = scheduledRefreshes.entries().next().value;
       if (!next) return false;
@@ -181,6 +236,33 @@ function loadCardBack(documents, options = {}) {
       return true;
     },
   };
+}
+
+// Wires the real embedded-form JWT bridge (src/proxy-auth.ts) to the card-back's
+// create-contact frame: the frame's postMessage reaches the child, and the child's
+// parent.postMessage reaches the card-back as a message from that frame.
+function connectEmbeddedForm(dom) {
+  const frame = dom.window.document.querySelector('.create-contact-frame');
+  const origin = dom.window.location.origin;
+  const childListeners = [];
+  const posted = [];
+  const parentRef = {
+    postMessage: (data, targetOrigin) => {
+      if (targetOrigin !== origin) return;
+      dom.window.dispatchEvent(new dom.window.MessageEvent('message', { data, origin, source: frame.contentWindow }));
+    },
+  };
+  const child = {
+    parent: parentRef,
+    location: { origin },
+    addEventListener: (type, listener) => { if (type === 'message') childListeners.push(listener); },
+  };
+  frame.contentWindow.postMessage = (data, targetOrigin) => {
+    posted.push(data);
+    if (targetOrigin !== origin) return;
+    for (const listener of childListeners) listener({ data, origin, source: parentRef });
+  };
+  return { frame, posted, source: createParentJwtSource(child) };
 }
 
 async function waitForRender() {
@@ -2067,5 +2149,358 @@ describe('card-back document view (internal API v2)', () => {
 
     expect(dom.window.document.querySelector('.documents-note')?.textContent)
       .toBe('Este cliente no tiene partes de trabajo.');
+  });
+
+  it('sends the Trello JWT on every proxy call: document search, attachment list and contact detail', async () => {
+    const token = fakeTrelloJwt('card');
+    const { dom, requests, authState } = loadCardBack({
+      waybills: [{
+        id: 'wb-1',
+        documentNumber: 'ALB-1',
+        kind: 'labour',
+        issueDate: '2026-07-10',
+        notes: 'Nota',
+        attachmentsUrl: '/v2/documents/waybills/wb-1/attachments',
+      }],
+    }, { attachments: [], jwtTokens: [token, fakeTrelloJwt('unused')] });
+    await waitForRender();
+    expand(dom);
+    await waitForRender();
+
+    const proxyRequests = requests.filter(({ url }) => url.startsWith('https://holded-proxy.electricaferrer.workers.dev/'));
+    expect(proxyRequests.some(({ url }) => url.includes('/v2/documents/search'))).toBe(true);
+    expect(proxyRequests.some(({ url }) => url.includes('/v2/contacts/contact-1'))).toBe(true);
+    // The latest work report opens its preview and lazy-loads the attachment list.
+    expect(proxyRequests.some(({ url }) => url.includes('/v2/documents/waybills/wb-1/attachments'))).toBe(true);
+    for (const { url, init } of proxyRequests) {
+      expect(init?.headers?.Authorization, url).toBe(`Bearer ${token}`);
+    }
+    // One JWT is reused for all calls until 60 s before it expires.
+    expect(authState.jwtCalls).toBe(1);
+  });
+
+  it('asks Trello for a new JWT and retries once when the proxy answers 401', async () => {
+    const stale = fakeTrelloJwt('stale');
+    const fresh = fakeTrelloJwt('fresh');
+    const { dom, requests, authState } = loadCardBack(
+      { waybills: [{ id: 'wb-1', documentNumber: 'ALB-26-000123', kind: 'labour', issueDate: '2026-07-10' }] },
+      { jwtTokens: [stale, fresh], rejectedJwts: [stale] },
+    );
+    await waitForRender();
+    expand(dom);
+    await waitForRender();
+
+    const searches = requests.filter(({ url }) => url.includes('/v2/documents/search'));
+    expect(searches.map(({ init }) => init.headers.Authorization)).toEqual([`Bearer ${stale}`, `Bearer ${fresh}`]);
+    expect(authState.jwtCalls).toBe(2);
+    expect(contentText(dom)).toContain('ALB-26-000123');
+  });
+
+  it('asks for a new JWT once the current one is within 60 s of its exp', async () => {
+    const expiring = fakeTrelloJwt('expiring', Math.floor(Date.now() / 1000) + 59);
+    const next = fakeTrelloJwt('next');
+    const { dom, requests, authState } = loadCardBack(
+      { waybills: [], invoices: [] },
+      { jwtTokens: [expiring, next] },
+    );
+    await waitForRender();
+    expect(authState.jwtCalls).toBe(1);
+
+    selectDocumentTab(dom, 'invoices');
+    await waitForRender();
+
+    expect(authState.jwtCalls).toBe(2);
+    const search = requests.find(({ url }) => url.includes('type=invoices'));
+    expect(search.init.headers.Authorization).toBe(`Bearer ${next}`);
+  });
+
+  it('posts its JWT to the embedded create-contact form, only to its own origin', async () => {
+    const tokens = [fakeTrelloJwt('first'), fakeTrelloJwt('second')];
+    const { dom, authState } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      { contactId: null, projectId: null, pluginData: { holdedCreateContactOpen: true }, jwtTokens: tokens },
+    );
+    await waitForRender();
+    const frame = dom.window.document.querySelector('.create-contact-frame');
+    const sent = [];
+    frame.contentWindow.postMessage = (message, targetOrigin) => { sent.push({ message, targetOrigin }); };
+
+    frame.dispatchEvent(new dom.window.Event('load'));
+    await waitForRender();
+
+    expect(sent).toEqual([{
+      message: { type: 'ef-proxy-jwt', jwt: tokens[0] },
+      targetOrigin: dom.window.location.origin,
+    }]);
+
+    // The form asks again when its JWT is spent (a 401 or close to exp): the card renews it.
+    dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data: { type: 'ef-proxy-jwt-request' },
+      origin: dom.window.location.origin,
+      source: frame.contentWindow,
+    }));
+    await waitForRender();
+
+    expect(authState.jwtCalls).toBe(2);
+    expect(sent.at(-1)).toEqual({
+      message: { type: 'ef-proxy-jwt', jwt: tokens[1] },
+      targetOrigin: dom.window.location.origin,
+    });
+
+    // Requests from another window or origin are ignored.
+    dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data: { type: 'ef-proxy-jwt-request' },
+      origin: 'https://example.com',
+      source: frame.contentWindow,
+    }));
+    dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data: { type: 'ef-proxy-jwt-request' },
+      origin: dom.window.location.origin,
+      source: dom.window,
+    }));
+    await waitForRender();
+    expect(authState.jwtCalls).toBe(2);
+    expect(sent).toHaveLength(2);
+  });
+
+  describe('signed attachment URLs in a card that stays open', () => {
+    const PROXY = 'https://holded-proxy.electricaferrer.workers.dev';
+    const ATTACHMENTS_PATH = '/v2/documents/waybills/wb-1/attachments';
+    const TTL_S = 900;
+
+    // Each list response signs its URLs for 15 minutes from the card's clock, like the Worker.
+    function signedAttachments(clock, { images = 0 } = {}) {
+      return (call) => {
+        const exp = Math.floor(clock.ms / 1000) + TTL_S;
+        const signed = (id) => `${ATTACHMENTS_PATH}/${encodeURIComponent(id)}?name=${encodeURIComponent(id)}&exp=${exp}&sig=sig-${call}`;
+        return [
+          { id: 'plano.pdf', name: 'plano.pdf', mimeType: 'application/pdf', url: signed('plano.pdf') },
+          ...Array.from({ length: images }, (_, index) => ({
+            id: `foto-${index + 1}.jpg`,
+            name: `foto-${index + 1}.jpg`,
+            mimeType: 'image/jpeg',
+            url: signed(`foto-${index + 1}.jpg`),
+          })),
+        ];
+      };
+    }
+
+    async function openCardWithAttachments(options = {}) {
+      const clock = { ms: Date.now() };
+      const card = loadCardBack({
+        salesOrders: [],
+        invoices: [],
+        estimates: [],
+        waybills: [{
+          id: 'wb-1', type: 'waybills', documentNumber: 'ALB-1', kind: 'labour', workflowStatus: 'prepared',
+          issueDate: '2026-07-15', notes: 'Nota', attachmentsUrl: ATTACHMENTS_PATH, projects: [],
+        }],
+      }, { clock, attachments: signedAttachments(clock, options) });
+      await waitForRender();
+      expand(card.dom);
+      await waitForRender();
+      const listRequests = () => card.requests.filter(({ url }) => url.startsWith(`${PROXY}${ATTACHMENTS_PATH}`));
+      const fileLink = () => card.dom.window.document.querySelector('.document-preview-file');
+      return { ...card, clock, listRequests, fileLink };
+    }
+
+    function click(dom, element) {
+      const event = new dom.window.MouseEvent('click', { bubbles: true, cancelable: true });
+      element.dispatchEvent(event);
+      return event;
+    }
+
+    it('opens a still-valid attachment URL directly, without renewing the list', async () => {
+      const { dom, clock, listRequests, fileLink, openCalls } = await openCardWithAttachments();
+      expect(listRequests()).toHaveLength(1);
+      expect(fileLink().getAttribute('href')).toContain('sig=sig-1');
+
+      clock.ms += (TTL_S - 120) * 1000;
+      const event = click(dom, fileLink());
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(openCalls).toHaveLength(0);
+      expect(listRequests()).toHaveLength(1);
+    });
+
+    it('renews the list with a JWT before opening an attachment whose URL has expired', async () => {
+      const { dom, clock, listRequests, fileLink, openCalls } = await openCardWithAttachments();
+      clock.ms += (TTL_S + 1) * 1000;
+
+      const event = click(dom, fileLink());
+      expect(event.defaultPrevented).toBe(true);
+      // The tab opens within the click, so the browser allows it; the fresh URL follows.
+      expect(openCalls).toHaveLength(1);
+      await waitForRender();
+
+      expect(listRequests()).toHaveLength(2);
+      expect(listRequests()[1].init.headers.Authorization).toMatch(/^Bearer /);
+      expect(openCalls[0].opened.opener).toBeNull();
+      expect(openCalls[0].opened.location.href).toBe(`${PROXY}${ATTACHMENTS_PATH}/plano.pdf?name=plano.pdf&exp=${Math.floor(clock.ms / 1000) + TTL_S}&sig=sig-2`);
+      expect(fileLink().getAttribute('href')).toContain('sig=sig-2');
+      expect(dom.window.document.querySelector('.document-preview-attachments-slot').getAttribute('data-state')).toBe('loaded');
+    });
+
+    it('treats a URL within 60 s of its exp as expired', async () => {
+      const { dom, clock, listRequests, fileLink } = await openCardWithAttachments();
+      clock.ms += (TTL_S - 60) * 1000;
+
+      expect(click(dom, fileLink()).defaultPrevented).toBe(true);
+      await waitForRender();
+      expect(listRequests()).toHaveLength(2);
+    });
+
+    it('renews the list on its own when the URLs are about to expire while the preview stays open', async () => {
+      const { dom, clock, listRequests, fileLink, runLongTimers } = await openCardWithAttachments({ images: 2 });
+      expect(dom.window.document.querySelector('.document-preview-image')?.getAttribute('src')).toContain('sig=sig-1');
+
+      clock.ms += (TTL_S - 60) * 1000;
+      // Scheduled 60 s before the earliest exp (whole seconds, so up to 1 s sooner).
+      const delays = runLongTimers();
+      expect(delays).toHaveLength(1);
+      expect(delays[0]).toBeGreaterThan((TTL_S - 61) * 1000);
+      expect(delays[0]).toBeLessThanOrEqual((TTL_S - 60) * 1000);
+      await waitForRender();
+
+      expect(listRequests()).toHaveLength(2);
+      expect(fileLink().getAttribute('href')).toContain('sig=sig-2');
+      expect(dom.window.document.querySelector('.document-preview-image')?.getAttribute('src')).toContain('sig=sig-2');
+      // The renewed list schedules the next renewal.
+      expect(runLongTimers()).toHaveLength(1);
+    });
+
+    it('drops an expiring list of a closed preview and loads it fresh when it opens again', async () => {
+      const { dom, clock, listRequests, fileLink, runLongTimers } = await openCardWithAttachments();
+      const toggle = dom.window.document.querySelector('.document-preview-toggle');
+      toggle.click();
+      clock.ms += (TTL_S - 60) * 1000;
+      runLongTimers();
+      await waitForRender();
+      // Nobody sees it: no request until the preview opens again.
+      expect(listRequests()).toHaveLength(1);
+
+      toggle.click();
+      await waitForRender();
+      expect(listRequests()).toHaveLength(2);
+      expect(fileLink().getAttribute('href')).toContain('sig=sig-2');
+    });
+
+    it('reloads an expired list when the preview is closed and opened again', async () => {
+      const { dom, clock, listRequests, fileLink } = await openCardWithAttachments();
+      const toggle = dom.window.document.querySelector('.document-preview-toggle');
+      toggle.click();
+      clock.ms += (TTL_S + 1) * 1000;
+      toggle.click();
+      await waitForRender();
+
+      expect(listRequests()).toHaveLength(2);
+      expect(fileLink().getAttribute('href')).toContain('sig=sig-2');
+    });
+
+    it('renews an expired list before showing more images', async () => {
+      const { dom, clock, listRequests } = await openCardWithAttachments({ images: 7 });
+      expect(dom.window.document.querySelectorAll('.document-preview-image-link')).toHaveLength(5);
+
+      clock.ms += (TTL_S + 1) * 1000;
+      click(dom, dom.window.document.querySelector('.document-preview-load-more'));
+      await waitForRender();
+
+      expect(listRequests()).toHaveLength(2);
+      const images = [...dom.window.document.querySelectorAll('.document-preview-image-link')];
+      expect(images).toHaveLength(7);
+      for (const image of images) expect(image.getAttribute('href')).toContain('sig=sig-2');
+    });
+  });
+
+  it('answers every explicit JWT request from the embedded form, even when Trello returns the same JWT', async () => {
+    const token = fakeTrelloJwt('constant');
+    const { dom, authState } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      { contactId: null, projectId: null, pluginData: { holdedCreateContactOpen: true }, jwtTokens: [token] },
+    );
+    await waitForRender();
+    const { frame, source } = connectEmbeddedForm(dom);
+    frame.dispatchEvent(new dom.window.Event('load'));
+    await waitForRender();
+
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockResolvedValueOnce(new Response('{"id":"contact-1"}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchImpl);
+    try {
+      const response = await Promise.race([
+        proxyFetch(source, 'https://holded-proxy.electricaferrer.workers.dev/v2/contacts', { method: 'POST' }),
+        new Promise((resolve) => setTimeout(() => resolve('still pending'), 500)),
+      ]);
+
+      expect(response).not.toBe('still pending');
+      expect(response.status).toBe(200);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(fetchImpl.mock.calls.map(([, init]) => init.headers.Authorization)).toEqual([`Bearer ${token}`, `Bearer ${token}`]);
+      // The 401 made the card ask Trello again, and it answered the form with that JWT.
+      expect(authState.jwtCalls).toBeGreaterThanOrEqual(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reports a failed t.jwt() to the embedded form so its submit fails instead of hanging', async () => {
+    const token = fakeTrelloJwt('first');
+    const { dom } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      {
+        contactId: null,
+        projectId: null,
+        pluginData: { holdedCreateContactOpen: true },
+        jwt: (call) => (call === 1 ? Promise.resolve(token) : Promise.reject(new Error('Trello unavailable'))),
+      },
+    );
+    await waitForRender();
+    const { frame, posted, source } = connectEmbeddedForm(dom);
+    frame.dispatchEvent(new dom.window.Event('load'));
+    await waitForRender();
+
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('{}', { status: 401 }));
+    vi.stubGlobal('fetch', fetchImpl);
+    try {
+      const outcome = await Promise.race([
+        proxyFetch(source, 'https://holded-proxy.electricaferrer.workers.dev/v2/contacts', { method: 'POST' })
+          .then(() => 'resolved', (err) => err.message),
+        new Promise((resolve) => setTimeout(() => resolve('still pending'), 500)),
+      ]);
+
+      expect(outcome).toContain('No se pudo obtener la sesión de Trello');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(posted.at(-1)).toEqual({ type: 'ef-proxy-jwt-error' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('posts the JWT again when the embedded form finishes loading, even if it got one before', async () => {
+    const token = fakeTrelloJwt('only');
+    const { dom } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      { contactId: null, projectId: null, pluginData: { holdedCreateContactOpen: true }, jwtTokens: [token] },
+    );
+    await waitForRender();
+    const frame = dom.window.document.querySelector('.create-contact-frame');
+    const sent = [];
+    frame.contentWindow.postMessage = (message) => { sent.push(message); };
+
+    // A message posted while the frame is still navigating can be lost: the load posts again.
+    dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data: { type: 'ef-proxy-jwt-request' },
+      origin: dom.window.location.origin,
+      source: frame.contentWindow,
+    }));
+    await waitForRender();
+    frame.dispatchEvent(new dom.window.Event('load'));
+    await waitForRender();
+
+    expect(sent).toEqual([
+      { type: 'ef-proxy-jwt', jwt: token },
+      { type: 'ef-proxy-jwt', jwt: token },
+    ]);
   });
 });

@@ -1,9 +1,64 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import worker from './index';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import rawWorker from './index';
+import { clearTrelloKeyCache, signAttachmentUrl, verifyTrelloJwt } from './auth';
+import {
+  TEST_POWERUP_ID,
+  createTrelloSigner,
+  publicKeysResponse,
+  trelloClaims,
+  type TrelloTestSigner,
+} from './test-support/trello-jwt';
+
+const ALLOWED_ORIGIN = 'https://trello-link-holded-power-up.pages.dev';
 
 const env = {
   EF_INTERNAL_API_KEY: 'efk_test',
   REPORT_WEBHOOK_TOKEN: 'report-token',
+  TRELLO_POWERUP_ID: TEST_POWERUP_ID,
+  ALLOWED_ORIGIN,
+  ATTACHMENT_URL_SECRET: 'attachment-secret-for-tests',
+};
+
+let trelloSigner: TrelloTestSigner;
+let validJwt: string;
+
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+beforeAll(async () => {
+  trelloSigner = await createTrelloSigner();
+  validJwt = await trelloSigner.sign(trelloClaims(nowSeconds()));
+});
+
+// Warm the isolate's Trello key cache so route tests only see their own upstream fetches.
+beforeEach(async () => {
+  clearTrelloKeyCache();
+  await verifyTrelloJwt(validJwt, env, nowSeconds(), async () => publicKeysResponse([trelloSigner.publicKeyPem]));
+});
+
+function withTrelloJwt(request: Request): Request {
+  if (request.headers.has('Authorization')) return request;
+  const headers = new Headers(request.headers);
+  headers.set('Authorization', `Bearer ${validJwt}`);
+  return new Request(request, { headers });
+}
+
+/** Adds `exp` and `sig` as the attachment list does (valid for 15 minutes by default). */
+async function signAttachment(
+  url: URL,
+  parts: { type: string; documentId: string; attachmentId: string },
+  exp = nowSeconds() + 900,
+): Promise<URL> {
+  url.searchParams.set('exp', String(exp));
+  url.searchParams.set('sig', await signAttachmentUrl(env.ATTACHMENT_URL_SECRET, { ...parts, exp }));
+  return url;
+}
+
+/** The Worker as the Power-Up calls it: every request carries a valid Trello JWT. */
+const worker = {
+  fetch: (request: Request, workerEnv: Parameters<typeof rawWorker.fetch>[1]) =>
+    rawWorker.fetch(withTrelloJwt(request), workerEnv),
 };
 
 describe('Holded proxy Worker V2 routes', () => {
@@ -235,6 +290,7 @@ describe('Worker /v2 internal-API document routes', () => {
     );
     proxyUrl.searchParams.set('name', 'cuadro.jpg');
     proxyUrl.searchParams.set('source', downloadUrl);
+    await signAttachment(proxyUrl, { type: 'waybills', documentId: 'abcdef0123456789abcdef01', attachmentId });
     const fetchImpl = vi.fn().mockResolvedValue(new Response('image-body', {
       headers: {
         'Content-Type': 'image/jpeg',
@@ -257,6 +313,7 @@ describe('Worker /v2 internal-API document routes', () => {
         headers: {
           Accept: 'application/octet-stream',
           Authorization: 'Bearer efk_test',
+          'X-EF-Client': 'trello-power-up/1.1.0',
         },
       }),
     );
@@ -278,6 +335,7 @@ describe('Worker /v2 internal-API document routes', () => {
       'source',
       'https://api.app.electricaferrer.es/internal/v1/contacts/contact-1',
     );
+    await signAttachment(proxyUrl, { type: 'waybills', documentId: 'abcdef0123456789abcdef01', attachmentId: 'foto.png' });
 
     const response = await worker.fetch(new Request(proxyUrl), envV2);
 
@@ -1770,5 +1828,453 @@ describe('Worker /v2 internal-API document routes', () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'code already used' });
+  });
+});
+
+describe('Worker access control (Trello Power-Up JWT)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const protectedRequests: Array<[string, () => Request]> = [
+    ['GET /contacts/search', () => new Request('https://proxy.test/contacts/search?q=Acme')],
+    ['GET /projects/search', () => new Request('https://proxy.test/projects/search?q=Obra')],
+    ['GET /v2/documents/search', () => new Request('https://proxy.test/v2/documents/search?contactId=contact-1&type=waybills')],
+    ['GET attachment list', () => new Request('https://proxy.test/v2/documents/waybills/doc-1/attachments')],
+    ['GET /v2/contacts/:id', () => new Request('https://proxy.test/v2/contacts/contact-1')],
+    ['POST /v2/contacts', () => new Request('https://proxy.test/v2/contacts?idempotencyKey=idem-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'X' }),
+    })],
+    ['POST shipping address', () => new Request('https://proxy.test/v2/contacts/contact-1/shipping-addresses?idempotencyKey=idem-2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Obra' }),
+    })],
+    ['POST /v2/reports', () => new Request('https://proxy.test/v2/reports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customerId: 'contact-1', email: ['a@example.com'] }),
+    })],
+    ['unknown route', () => new Request('https://proxy.test/holded/contacts')],
+  ];
+
+  function withAuthorization(request: Request, value: string): Request {
+    const headers = new Headers(request.headers);
+    headers.set('Authorization', value);
+    return new Request(request, { headers });
+  }
+
+  it.each(protectedRequests)('rejects %s without a JWT and never calls upstream', async (_name, build) => {
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await rawWorker.fetch(build(), env);
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: { code: 'UNAUTHORIZED' } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each(protectedRequests)('rejects %s with an invalid JWT and never calls upstream', async (_name, build) => {
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+    const otherSigner = await createTrelloSigner();
+    const now = nowSeconds();
+    const invalidTokens = [
+      await otherSigner.sign(trelloClaims(now)),
+      await trelloSigner.sign(trelloClaims(now, { iss: 'someone' })),
+      await trelloSigner.sign(trelloClaims(now, { exp: now - 120, iat: now - 1000 })),
+      await trelloSigner.sign(trelloClaims(now, { idPlugin: '5e66784c606cb1160a8f5dc0' })),
+      'not-a-jwt',
+    ];
+
+    for (const token of invalidTokens) {
+      const response = await rawWorker.fetch(withAuthorization(build(), `Bearer ${token}`), env);
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: { code: 'UNAUTHORIZED' } });
+    }
+    const basic = await rawWorker.fetch(withAuthorization(build(), `Basic ${validJwt}`), env);
+    expect(basic.status).toBe(401);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers with a valid JWT as before', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(internalJson({ items: [] }));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await rawWorker.fetch(
+      withAuthorization(new Request('https://proxy.test/contacts/search?q=Acme'), `Bearer ${validJwt}`),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers preflight requests without a JWT', async () => {
+    const response = await rawWorker.fetch(new Request('https://proxy.test/contacts/search', { method: 'OPTIONS' }), env);
+
+    expect(response.status).toBe(204);
+  });
+});
+
+describe('Worker CORS', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function preflight(origin: string): Request {
+    return new Request('https://proxy.test/v2/documents/search', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: origin,
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'authorization',
+      },
+    });
+  }
+
+  it('allows the Power-Up origin to send Authorization and Content-Type in a preflight', async () => {
+    const response = await rawWorker.fetch(preflight(ALLOWED_ORIGIN), env);
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(ALLOWED_ORIGIN);
+    expect(response.headers.get('Access-Control-Allow-Headers')).toBe('Authorization, Content-Type');
+    expect(response.headers.get('Access-Control-Allow-Methods')).toBe('GET, POST, OPTIONS');
+    expect(response.headers.get('Vary')).toBe('Origin');
+  });
+
+  it('gives no Access-Control-Allow-Origin to a preflight from another origin', async () => {
+    for (const origin of ['https://example.com', 'https://evil.trello-link-holded-power-up.pages.dev', 'null']) {
+      const response = await rawWorker.fetch(preflight(origin), env);
+
+      expect(response.headers.get('Access-Control-Allow-Origin'), origin).toBeNull();
+      expect(response.headers.get('Vary')).toBe('Origin');
+    }
+  });
+
+  it('returns the allowed origin on a GET from the Power-Up and nothing for another origin', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => internalJson({ items: [] })));
+
+    const allowed = await worker.fetch(
+      new Request('https://proxy.test/contacts/search?q=Acme', { headers: { Origin: ALLOWED_ORIGIN } }),
+      env,
+    );
+    const other = await worker.fetch(
+      new Request('https://proxy.test/contacts/search?q=Acme', { headers: { Origin: 'https://example.com' } }),
+      env,
+    );
+    const noOrigin = await worker.fetch(new Request('https://proxy.test/contacts/search?q=Acme'), env);
+
+    expect(allowed.status).toBe(200);
+    expect(allowed.headers.get('Access-Control-Allow-Origin')).toBe(ALLOWED_ORIGIN);
+    expect(allowed.headers.get('Vary')).toBe('Origin');
+    expect(other.headers.get('Access-Control-Allow-Origin')).toBeNull();
+    expect(noOrigin.headers.get('Access-Control-Allow-Origin')).toBeNull();
+  });
+
+  it('lets the Power-Up read a 401 so it can retry with a new JWT', async () => {
+    const response = await rawWorker.fetch(
+      new Request('https://proxy.test/contacts/search?q=Acme', { headers: { Origin: ALLOWED_ORIGIN } }),
+      env,
+    );
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(ALLOWED_ORIGIN);
+  });
+
+  it('gives no Access-Control-Allow-Origin when ALLOWED_ORIGIN is not configured', async () => {
+    const response = await rawWorker.fetch(preflight(ALLOWED_ORIGIN), { ...env, ALLOWED_ORIGIN: undefined });
+
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
+  });
+});
+
+describe('Worker signed attachment URLs', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const documentId = 'abcdef0123456789abcdef01';
+  const attachmentId = 'foto final.jpg';
+  const parts = { type: 'waybills', documentId, attachmentId };
+
+  function binaryUrl(id = attachmentId): URL {
+    return new URL(`https://proxy.test/v2/documents/waybills/${documentId}/attachments/${encodeURIComponent(id)}`);
+  }
+
+  function imageResponse(): Response {
+    return new Response('image-body', { headers: { 'Content-Type': 'image/jpeg' } });
+  }
+
+  async function listedUrl(): Promise<URL> {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(internalJson({
+      items: [{
+        id: attachmentId,
+        name: attachmentId,
+        contentType: 'image/jpeg',
+        downloadUrl: `${INTERNAL_BASE}/waybills/${documentId}/attachments/${encodeURIComponent(attachmentId)}`,
+      }],
+      hasMore: false,
+      nextCursor: null,
+    })));
+    const response = await worker.fetch(
+      new Request(`https://proxy.test/v2/documents/waybills/${documentId}/attachments`),
+      env,
+    );
+    const body = await response.json();
+    vi.unstubAllGlobals();
+    return new URL(body.items[0].url, 'https://proxy.test');
+  }
+
+  it('lists binary URLs with exp 15 minutes ahead and a signature the binary accepts', async () => {
+    const before = nowSeconds();
+    const url = await listedUrl();
+    const exp = Number(url.searchParams.get('exp'));
+
+    expect(exp).toBeGreaterThanOrEqual(before + 900);
+    expect(exp).toBeLessThanOrEqual(nowSeconds() + 900);
+    expect(url.searchParams.get('sig')).toBe(await signAttachmentUrl(env.ATTACHMENT_URL_SECRET, { ...parts, exp }));
+
+    const fetchImpl = vi.fn().mockResolvedValue(imageResponse());
+    vi.stubGlobal('fetch', fetchImpl);
+    // <img> and <a> send no Authorization header.
+    const response = await rawWorker.fetch(new Request(url), env);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('image-body');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an altered signature, another attachment, a moved exp or a missing signature with 403', async () => {
+    const valid = await signAttachment(binaryUrl(), parts);
+    const sig = valid.searchParams.get('sig')!;
+    const exp = valid.searchParams.get('exp')!;
+
+    const alteredSig = new URL(valid);
+    // Change the first character: the last one of a 43-character base64url value carries padding bits.
+    alteredSig.searchParams.set('sig', `${sig.startsWith('A') ? 'B' : 'A'}${sig.slice(1)}`);
+    const otherAttachment = binaryUrl('otra foto.jpg');
+    otherAttachment.search = valid.search;
+    const otherDocument = new URL(valid.toString().replace(documentId, 'fedcba9876543210fedcba98'));
+    const otherType = new URL(valid.toString().replace('/waybills/', '/invoices/'));
+    const extendedExp = new URL(valid);
+    extendedExp.searchParams.set('exp', String(Number(exp) + 3600));
+    const noSig = new URL(valid);
+    noSig.searchParams.delete('sig');
+    const noExp = new URL(valid);
+    noExp.searchParams.delete('exp');
+    const textExp = new URL(valid);
+    textExp.searchParams.set('exp', `${exp}.0`);
+    const zeroPaddedExp = new URL(valid);
+    zeroPaddedExp.searchParams.set('exp', `0${exp}`);
+
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+    for (const url of [alteredSig, otherAttachment, otherDocument, otherType, extendedExp, noSig, noExp, textExp, zeroPaddedExp, binaryUrl()]) {
+      const response = await rawWorker.fetch(new Request(url), env);
+      expect(response.status, url.toString()).toBe(403);
+      expect((await response.json()).error.code).toBe('FORBIDDEN');
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects an expired signed URL with 403', async () => {
+    const expired = await signAttachment(binaryUrl(), parts, nowSeconds() - 1);
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await rawWorker.fetch(new Request(expired), env);
+
+    expect(response.status).toBe(403);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not let a valid signature reach another resource through source', async () => {
+    const url = await signAttachment(binaryUrl(), parts);
+    url.searchParams.set('source', `${INTERNAL_BASE}/waybills/${documentId}/attachments/${encodeURIComponent('otra foto.jpg')}`);
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await rawWorker.fetch(new Request(url), env);
+
+    expect(response.status).toBe(400);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers 500 CONFIG without ATTACHMENT_URL_SECRET and never calls upstream', async () => {
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+    const unsigned = { ...env, ATTACHMENT_URL_SECRET: undefined };
+
+    const list = await worker.fetch(
+      new Request(`https://proxy.test/v2/documents/waybills/${documentId}/attachments`),
+      unsigned,
+    );
+    const binary = await rawWorker.fetch(new Request(await signAttachment(binaryUrl(), parts)), unsigned);
+
+    expect(list.status).toBe(500);
+    expect((await list.json()).error.code).toBe('CONFIG');
+    expect(binary.status).toBe(500);
+    expect((await binary.json()).error.code).toBe('CONFIG');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('Worker document creation metadata (createdBy from the lists)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function waybill(id: string, extra: Record<string, unknown> = {}) {
+    return {
+      id,
+      docNumber: `ALB-${id}`,
+      issueDate: '2026-08-18',
+      kind: 'labour',
+      workflowStatus: 'delivered',
+      customer: { id: 'contact-1', name: 'Acme' },
+      projects: [],
+      ...extra,
+    };
+  }
+
+  function salesOrder(id: string, extra: Record<string, unknown> = {}) {
+    return {
+      id,
+      docNumber: `PV-${id}`,
+      issueDate: '2026-08-18',
+      status: 'pending',
+      customer: { id: 'contact-1', name: 'Acme' },
+      projects: [],
+      totalUnits: 1,
+      internalStatus: 'requested',
+      ...extra,
+    };
+  }
+
+  function eventCalls(fetchImpl: ReturnType<typeof vi.fn>): string[] {
+    return fetchImpl.mock.calls.map((call) => String(call[0])).filter((url) => url.includes('/events'));
+  }
+
+  it('asks for no events when every listed waybill already has createdBy, even without createdAt', async () => {
+    const fetchImpl = vi.fn(async (input: string) => {
+      if (input.includes('/events')) return internalJson({ items: [] });
+      return internalJson({
+        items: [waybill('wb-1', { createdBy: 'Marta Ferrer' }), waybill('wb-2', { kind: 'mixed', createdBy: 'Joan Ferrer' })],
+        pagination: { page: 1, pageSize: 100, hasMore: false },
+        readiness: 'ready',
+      });
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await worker.fetch(
+      new Request('https://proxy.test/v2/documents/search?contactId=contact-1&type=waybills&category=work&page=1&scope=all'),
+      envV2,
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(eventCalls(fetchImpl)).toEqual([]);
+    expect(body.results.map((item: { createdBy?: string }) => item.createdBy)).toEqual(['Marta Ferrer', 'Joan Ferrer']);
+    expect(body.results[0]).not.toHaveProperty('createdAt');
+  });
+
+  it('asks for the events of exactly the sales order without createdBy', async () => {
+    const fetchImpl = vi.fn(async (input: string) => {
+      if (input.includes('/events')) {
+        return internalJson({
+          items: [{ type: 'document.created', occurredAt: '2026-08-18T13:25:44.078Z', user: { name: 'Creador PV' } }],
+        });
+      }
+      if (input.includes('/purchase-orders') || input.includes('/waybills')) {
+        return internalJson({ items: [], pagination: { page: 1, pageSize: 100, hasMore: false }, readiness: 'ready' });
+      }
+      return internalJson({
+        items: [
+          salesOrder('so-listed', { createdBy: 'Ya en la lista' }),
+          salesOrder('so-missing'),
+          salesOrder('so-null', { createdBy: null }),
+        ],
+        pagination: { page: 1, pageSize: 10, hasMore: false },
+        readiness: 'ready',
+      });
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await worker.fetch(
+      new Request('https://proxy.test/v2/documents/search?contactId=contact-1&type=sales-orders&page=1&scope=all'),
+      envV2,
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(eventCalls(fetchImpl)).toEqual([
+      `${INTERNAL_BASE}/documents/sales-order/so-missing/events?limit=50`,
+      `${INTERNAL_BASE}/documents/sales-order/so-null/events?limit=50`,
+    ]);
+    expect(body.results.map((item: { id: string; createdBy?: string }) => [item.id, item.createdBy])).toEqual([
+      ['so-listed', 'Ya en la lista'],
+      ['so-missing', 'Creador PV'],
+      ['so-null', 'Creador PV'],
+    ]);
+  });
+
+  it('asks for one events call for a single sales order without createdBy', async () => {
+    const fetchImpl = vi.fn(async (input: string) => {
+      if (input.includes('/events')) return internalJson({ items: [] });
+      if (input.includes('/purchase-orders') || input.includes('/waybills')) {
+        return internalJson({ items: [], pagination: { page: 1, pageSize: 100, hasMore: false }, readiness: 'ready' });
+      }
+      return internalJson({
+        items: [salesOrder('so-1')],
+        pagination: { page: 1, pageSize: 10, hasMore: false },
+        readiness: 'ready',
+      });
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await worker.fetch(
+      new Request('https://proxy.test/v2/documents/search?contactId=contact-1&type=sales-orders&page=1&scope=all'),
+      envV2,
+    );
+
+    expect(eventCalls(fetchImpl)).toHaveLength(1);
+  });
+
+  it('skips events for related purchase orders and waybills that bring createdBy', async () => {
+    const fetchImpl = vi.fn(async (input: string) => {
+      if (input.includes('/events')) return internalJson({ items: [] });
+      if (input.includes('/purchase-orders')) {
+        return internalJson({
+          items: [{ id: 'po-1', docNumber: 'PC-1', issueDate: '2026-08-18', sourceOrder: { id: 'so-1', docNumber: 'PV-so-1' }, createdBy: 'Compras' }],
+          pagination: { page: 1, pageSize: 100, hasMore: false },
+          readiness: 'ready',
+        });
+      }
+      if (input.includes('/waybills')) {
+        return internalJson({
+          items: [waybill('wb-1', { kind: 'material', sourceOrder: { id: 'so-1', docNumber: 'PV-so-1' }, createdBy: 'Almacén' })],
+          pagination: { page: 1, pageSize: 100, hasMore: false },
+          readiness: 'ready',
+        });
+      }
+      return internalJson({
+        items: [salesOrder('so-1', { createdBy: 'Ventas' })],
+        pagination: { page: 1, pageSize: 10, hasMore: false },
+        readiness: 'ready',
+      });
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await worker.fetch(
+      new Request('https://proxy.test/v2/documents/search?contactId=contact-1&type=sales-orders&page=1&scope=all'),
+      envV2,
+    );
+
+    expect(response.status).toBe(200);
+    expect(eventCalls(fetchImpl)).toEqual([]);
   });
 });

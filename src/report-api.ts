@@ -1,4 +1,5 @@
 import { HOLDED_PROXY_URL } from './config';
+import { proxyFetch, type JwtSource, type ProxyRequestInit } from './proxy-auth';
 
 export type ReportApprovalStatus = 'all' | 'approved' | 'not_approved';
 export type ReportExtraStatus = 'all' | 'extra' | 'not_extra';
@@ -105,8 +106,8 @@ export function createReportRequest(input: ReportRequestInput): ReportRequest {
   return request;
 }
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+async function fetchJson<T>(auth: JwtSource, url: string, init?: ProxyRequestInit): Promise<T> {
+  const response = await proxyFetch(auth, url, init);
   const body = await response.text();
   let parsed: unknown;
   try {
@@ -124,6 +125,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export function searchReportEstimates(
+  auth: JwtSource,
   customerId: string,
   projectId?: string,
 ): Promise<ReportEstimateSearchResult> {
@@ -134,12 +136,14 @@ export function searchReportEstimates(
   });
   if (projectId) params.set('projectId', projectId);
   return fetchJson<ReportEstimateSearchResult>(
+    auth,
     `${HOLDED_PROXY_URL}/v2/documents/search?${params.toString()}`,
   );
 }
 
-export async function generateReport(request: ReportRequest): Promise<ReportAcceptedResponse> {
+export async function generateReport(auth: JwtSource, request: ReportRequest): Promise<ReportAcceptedResponse> {
   const result = await fetchJson<ReportAcceptedResponse | ReportRejectedResponse>(
+    auth,
     `${HOLDED_PROXY_URL}/v2/reports`,
     {
       method: 'POST',
