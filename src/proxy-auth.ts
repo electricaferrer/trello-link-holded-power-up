@@ -70,27 +70,50 @@ export async function proxyFetch(source: JwtSource, url: string, init: ProxyRequ
   return send(await getProxyJwt(source, { forceRefresh: true, rejectedToken: token }));
 }
 
+/** How long the embedded form waits for the parent to answer a JWT request. */
+const PARENT_JWT_TIMEOUT_MS = 10_000;
+const PARENT_JWT_ERROR = 'No se pudo obtener la sesión de Trello. Inténtalo de nuevo.';
+
+interface ParentJwtWaiter {
+  resolve(token: string): void;
+  reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 /**
  * JWT source for the create-contact form embedded in the card section, which has
- * no Trello context: the parent posts `{type: "ef-proxy-jwt", jwt}`. Only messages
- * from the parent window and this same origin count. When the last JWT was already
- * used, it asks the parent for a new one and waits.
+ * no Trello context: the parent posts `{type: "ef-proxy-jwt", jwt}`, or
+ * `{type: "ef-proxy-jwt-error"}` when Trello gave it none. Only messages from the
+ * parent window and this same origin count. When the last JWT was already used, it
+ * asks the parent for a new one and waits, at most `PARENT_JWT_TIMEOUT_MS`.
  */
 export function createParentJwtSource(win: Window = window): JwtSource {
   let latest: string | null = null;
   let handedOut: string | null = null;
-  let waiting: Array<(token: string) => void> = [];
+  let waiting: ParentJwtWaiter[] = [];
+
+  function settleAll(settle: (waiter: ParentJwtWaiter) => void) {
+    const waiters = waiting;
+    waiting = [];
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      settle(waiter);
+    }
+  }
 
   win.addEventListener('message', (event: MessageEvent) => {
     if (event.source !== win.parent || event.origin !== win.location.origin) return;
     const data = event.data as { type?: unknown; jwt?: unknown } | null;
+    if (data?.type === 'ef-proxy-jwt-error') {
+      settleAll((waiter) => waiter.reject(new Error(PARENT_JWT_ERROR)));
+      return;
+    }
     if (!data || data.type !== 'ef-proxy-jwt' || typeof data.jwt !== 'string' || !data.jwt) return;
-    latest = data.jwt;
+    const token = data.jwt;
+    latest = token;
     if (waiting.length) {
-      const resolvers = waiting;
-      waiting = [];
-      handedOut = latest;
-      for (const resolve of resolvers) resolve(data.jwt);
+      handedOut = token;
+      settleAll((waiter) => waiter.resolve(token));
     }
   });
 
@@ -100,8 +123,16 @@ export function createParentJwtSource(win: Window = window): JwtSource {
         handedOut = latest;
         return Promise.resolve(latest);
       }
-      return new Promise<string>((resolve) => {
-        waiting.push(resolve);
+      return new Promise<string>((resolve, reject) => {
+        const waiter: ParentJwtWaiter = {
+          resolve,
+          reject,
+          timer: setTimeout(() => {
+            waiting = waiting.filter((other) => other !== waiter);
+            reject(new Error(PARENT_JWT_ERROR));
+          }, PARENT_JWT_TIMEOUT_MS),
+        };
+        waiting.push(waiter);
         win.parent.postMessage({ type: 'ef-proxy-jwt-request' }, win.location.origin);
       });
     },

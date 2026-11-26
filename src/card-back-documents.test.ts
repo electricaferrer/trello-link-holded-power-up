@@ -2,7 +2,8 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { JSDOM } from 'jsdom';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { createParentJwtSource, proxyFetch } from './proxy-auth';
 
 const PAGE_SIZE = 10;
 const TYPE_TO_KEY = {
@@ -178,6 +179,10 @@ function loadCardBack(documents, options = {}) {
           sizeTo: () => Promise.resolve(),
           render: (callback) => { renderCallback = callback; },
           jwt: () => {
+            if (options.jwt) {
+              authState.jwtCalls += 1;
+              return options.jwt(authState.jwtCalls);
+            }
             const token = jwtTokens[Math.min(authState.jwtCalls, jwtTokens.length - 1)];
             authState.jwtCalls += 1;
             return Promise.resolve(token);
@@ -205,6 +210,33 @@ function loadCardBack(documents, options = {}) {
       return true;
     },
   };
+}
+
+// Wires the real embedded-form JWT bridge (src/proxy-auth.ts) to the card-back's
+// create-contact frame: the frame's postMessage reaches the child, and the child's
+// parent.postMessage reaches the card-back as a message from that frame.
+function connectEmbeddedForm(dom) {
+  const frame = dom.window.document.querySelector('.create-contact-frame');
+  const origin = dom.window.location.origin;
+  const childListeners = [];
+  const posted = [];
+  const parentRef = {
+    postMessage: (data, targetOrigin) => {
+      if (targetOrigin !== origin) return;
+      dom.window.dispatchEvent(new dom.window.MessageEvent('message', { data, origin, source: frame.contentWindow }));
+    },
+  };
+  const child = {
+    parent: parentRef,
+    location: { origin },
+    addEventListener: (type, listener) => { if (type === 'message') childListeners.push(listener); },
+  };
+  frame.contentWindow.postMessage = (data, targetOrigin) => {
+    posted.push(data);
+    if (targetOrigin !== origin) return;
+    for (const listener of childListeners) listener({ data, origin, source: parentRef });
+  };
+  return { frame, posted, source: createParentJwtSource(child) };
 }
 
 async function waitForRender() {
@@ -2203,6 +2235,71 @@ describe('card-back document view (internal API v2)', () => {
     await waitForRender();
     expect(authState.jwtCalls).toBe(2);
     expect(sent).toHaveLength(2);
+  });
+
+  it('answers every explicit JWT request from the embedded form, even when Trello returns the same JWT', async () => {
+    const token = fakeTrelloJwt('constant');
+    const { dom, authState } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      { contactId: null, projectId: null, pluginData: { holdedCreateContactOpen: true }, jwtTokens: [token] },
+    );
+    await waitForRender();
+    const { frame, source } = connectEmbeddedForm(dom);
+    frame.dispatchEvent(new dom.window.Event('load'));
+    await waitForRender();
+
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockResolvedValueOnce(new Response('{"id":"contact-1"}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchImpl);
+    try {
+      const response = await Promise.race([
+        proxyFetch(source, 'https://holded-proxy.electricaferrer.workers.dev/v2/contacts', { method: 'POST' }),
+        new Promise((resolve) => setTimeout(() => resolve('still pending'), 500)),
+      ]);
+
+      expect(response).not.toBe('still pending');
+      expect(response.status).toBe(200);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(fetchImpl.mock.calls.map(([, init]) => init.headers.Authorization)).toEqual([`Bearer ${token}`, `Bearer ${token}`]);
+      // The 401 made the card ask Trello again, and it answered the form with that JWT.
+      expect(authState.jwtCalls).toBeGreaterThanOrEqual(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reports a failed t.jwt() to the embedded form so its submit fails instead of hanging', async () => {
+    const token = fakeTrelloJwt('first');
+    const { dom } = loadCardBack(
+      { salesOrders: [], waybills: [], estimates: [] },
+      {
+        contactId: null,
+        projectId: null,
+        pluginData: { holdedCreateContactOpen: true },
+        jwt: (call) => (call === 1 ? Promise.resolve(token) : Promise.reject(new Error('Trello unavailable'))),
+      },
+    );
+    await waitForRender();
+    const { frame, posted, source } = connectEmbeddedForm(dom);
+    frame.dispatchEvent(new dom.window.Event('load'));
+    await waitForRender();
+
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('{}', { status: 401 }));
+    vi.stubGlobal('fetch', fetchImpl);
+    try {
+      const outcome = await Promise.race([
+        proxyFetch(source, 'https://holded-proxy.electricaferrer.workers.dev/v2/contacts', { method: 'POST' })
+          .then(() => 'resolved', (err) => err.message),
+        new Promise((resolve) => setTimeout(() => resolve('still pending'), 500)),
+      ]);
+
+      expect(outcome).toContain('No se pudo obtener la sesión de Trello');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(posted.at(-1)).toEqual({ type: 'ef-proxy-jwt-error' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('posts the JWT again when the embedded form finishes loading, even if it got one before', async () => {

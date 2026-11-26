@@ -228,6 +228,61 @@ describe('createParentJwtSource (embedded create-contact form)', () => {
     expect(await next).toBe('second');
   });
 
+  it('rejects every waiting request when the parent reports that Trello gave no JWT', async () => {
+    const { frame, parent, send } = fakeFrame();
+    const source = createParentJwtSource(frame);
+    const first = source.jwt();
+    const second = source.jwt();
+    expect(parent.postMessage).toHaveBeenCalledWith({ type: 'ef-proxy-jwt-request' }, ORIGIN);
+
+    send({ type: 'ef-proxy-jwt-error' });
+
+    await expect(first).rejects.toThrow('No se pudo obtener la sesión de Trello');
+    await expect(second).rejects.toThrow('No se pudo obtener la sesión de Trello');
+    // The waiting list is cleared: a later JWT serves the next request, not the rejected ones.
+    const next = source.jwt();
+    send({ type: 'ef-proxy-jwt', jwt: 'after-error' });
+    expect(await next).toBe('after-error');
+  });
+
+  it('ignores bridge errors from another origin or another window', async () => {
+    const { frame, send } = fakeFrame();
+    const source = createParentJwtSource(frame);
+    let settled = '';
+    source.jwt().then((token) => { settled = token; }, () => { settled = 'rejected'; });
+
+    send({ type: 'ef-proxy-jwt-error' }, { origin: 'https://example.com' });
+    send({ type: 'ef-proxy-jwt-error' }, { source: {} });
+    await Promise.resolve();
+    expect(settled).toBe('');
+
+    send({ type: 'ef-proxy-jwt', jwt: 'good' });
+    await Promise.resolve();
+    expect(settled).toBe('good');
+  });
+
+  it('gives up waiting for the parent after a bounded timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const { frame, send } = fakeFrame();
+      const source = createParentJwtSource(frame);
+      const waiting = source.jwt();
+      const outcome = waiting.then(() => 'resolved', (err: Error) => err.message);
+
+      await vi.advanceTimersByTimeAsync(9_999);
+      send({ type: 'holded:contact-form-height', height: 10 });
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(await outcome).toContain('No se pudo obtener la sesión de Trello');
+      // A JWT that arrives late serves the next request.
+      send({ type: 'ef-proxy-jwt', jwt: 'late' });
+      expect(await source.jwt()).toBe('late');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not call the proxy until the parent sends a JWT', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response('{}'));
     vi.stubGlobal('fetch', fetchImpl);

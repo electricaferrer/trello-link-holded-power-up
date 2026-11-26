@@ -440,6 +440,92 @@ describe('popup search behavior', () => {
     dom.window.close();
   });
 
+  it('lets the embedded form retry, keeping its data, when the card section cannot get a JWT', async () => {
+    const { dom } = installPopupDom(`
+      <div id="form">
+        <input id="name" />
+        <input id="code" />
+        <input id="address" />
+        <input id="city" />
+        <input id="postalCode" />
+        <input id="province" />
+        <input id="country" />
+        <input id="email" />
+        <input id="phone" />
+        <div id="type-toggle">
+          <button type="button" data-value="empresa">Empresa</button>
+          <button type="button" data-value="persona">Persona</button>
+        </div>
+        <button type="button" id="submit-btn">Crear contacto</button>
+        <div id="code-duplicate-msg"></div>
+        <div id="error-msg"></div>
+      </div>
+    `);
+    dom.reconfigure({ url: 'https://power-up.test/create-contact.html?embedded=1' });
+    const postMessage = vi.spyOn(dom.window.parent, 'postMessage').mockImplementation(() => undefined);
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'contact-1' })));
+    vi.stubGlobal('fetch', fetchImpl);
+    const fromParent = (data) => dom.window.dispatchEvent(new dom.window.MessageEvent('message', {
+      data,
+      origin: 'https://power-up.test',
+      source: dom.window.parent,
+    }));
+
+    await import('./popups/create-contact');
+    fromParent({ type: 'ef-proxy-jwt', jwt: 'stale.jwt.sig' });
+
+    const values = {
+      name: 'Cliente Uno',
+      code: 'B12345678',
+      address: 'C/ Major 1',
+      city: 'Palma',
+      postalCode: '07001',
+      province: 'Illes Balears',
+      country: 'España',
+      email: 'cliente@example.com',
+    };
+    for (const [id, value] of Object.entries(values)) {
+      (dom.window.document.getElementById(id) as HTMLInputElement).value = value;
+    }
+    dom.window.document.querySelector<HTMLButtonElement>('[data-value="empresa"]')!.click();
+    const submit = dom.window.document.getElementById('submit-btn') as HTMLButtonElement;
+    submit.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+
+    // The proxy rejects the JWT; the form asks the card section, whose t.jwt() fails.
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalledWith({ type: 'ef-proxy-jwt-request' }, 'https://power-up.test'));
+    expect(submit.textContent).toBe('Creando...');
+    fromParent({ type: 'ef-proxy-jwt-error' });
+
+    await vi.waitFor(() => expect(submit.disabled).toBe(false));
+    expect(submit.textContent).toBe('Crear contacto');
+    const error = dom.window.document.getElementById('error-msg')!;
+    expect(error.style.display).toBe('block');
+    expect(error.textContent).toContain('No se pudo obtener la sesión de Trello');
+    for (const [id, value] of Object.entries(values)) {
+      expect((dom.window.document.getElementById(id) as HTMLInputElement).value).toBe(value);
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // Retrying asks again; with a JWT from the card section the contact is created.
+    postMessage.mockClear();
+    submit.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalledWith({ type: 'ef-proxy-jwt-request' }, 'https://power-up.test'));
+    fromParent({ type: 'ef-proxy-jwt', jwt: 'fresh.jwt.sig' });
+
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'holded:contact-created' }),
+      'https://power-up.test',
+    ));
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1][1].headers).toMatchObject({ Authorization: 'Bearer fresh.jwt.sig' });
+    // Same submission, same idempotency key: a retry cannot create the contact twice.
+    expect(fetchImpl.mock.calls[1][0]).toBe(fetchImpl.mock.calls[0][0]);
+
+    dom.window.close();
+  });
+
   it('shows both the linked client and project code in project results', async () => {
     const { dom } = installPopupDom(`
       <input id="search" />
