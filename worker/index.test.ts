@@ -2120,3 +2120,159 @@ describe('Worker signed attachment URLs', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+describe('Worker document creation metadata (createdBy from the lists)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function waybill(id: string, extra: Record<string, unknown> = {}) {
+    return {
+      id,
+      docNumber: `ALB-${id}`,
+      issueDate: '2026-08-18',
+      kind: 'labour',
+      workflowStatus: 'delivered',
+      customer: { id: 'contact-1', name: 'Acme' },
+      projects: [],
+      ...extra,
+    };
+  }
+
+  function salesOrder(id: string, extra: Record<string, unknown> = {}) {
+    return {
+      id,
+      docNumber: `PV-${id}`,
+      issueDate: '2026-08-18',
+      status: 'pending',
+      customer: { id: 'contact-1', name: 'Acme' },
+      projects: [],
+      totalUnits: 1,
+      internalStatus: 'requested',
+      ...extra,
+    };
+  }
+
+  function eventCalls(fetchImpl: ReturnType<typeof vi.fn>): string[] {
+    return fetchImpl.mock.calls.map((call) => String(call[0])).filter((url) => url.includes('/events'));
+  }
+
+  it('asks for no events when every listed waybill already has createdBy, even without createdAt', async () => {
+    const fetchImpl = vi.fn(async (input: string) => {
+      if (input.includes('/events')) return internalJson({ items: [] });
+      return internalJson({
+        items: [waybill('wb-1', { createdBy: 'Marta Ferrer' }), waybill('wb-2', { kind: 'mixed', createdBy: 'Joan Ferrer' })],
+        pagination: { page: 1, pageSize: 100, hasMore: false },
+        readiness: 'ready',
+      });
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await worker.fetch(
+      new Request('https://proxy.test/v2/documents/search?contactId=contact-1&type=waybills&category=work&page=1&scope=all'),
+      envV2,
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(eventCalls(fetchImpl)).toEqual([]);
+    expect(body.results.map((item: { createdBy?: string }) => item.createdBy)).toEqual(['Marta Ferrer', 'Joan Ferrer']);
+    expect(body.results[0]).not.toHaveProperty('createdAt');
+  });
+
+  it('asks for the events of exactly the sales order without createdBy', async () => {
+    const fetchImpl = vi.fn(async (input: string) => {
+      if (input.includes('/events')) {
+        return internalJson({
+          items: [{ type: 'document.created', occurredAt: '2026-08-18T13:25:44.078Z', user: { name: 'Creador PV' } }],
+        });
+      }
+      if (input.includes('/purchase-orders') || input.includes('/waybills')) {
+        return internalJson({ items: [], pagination: { page: 1, pageSize: 100, hasMore: false }, readiness: 'ready' });
+      }
+      return internalJson({
+        items: [
+          salesOrder('so-listed', { createdBy: 'Ya en la lista' }),
+          salesOrder('so-missing'),
+          salesOrder('so-null', { createdBy: null }),
+        ],
+        pagination: { page: 1, pageSize: 10, hasMore: false },
+        readiness: 'ready',
+      });
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await worker.fetch(
+      new Request('https://proxy.test/v2/documents/search?contactId=contact-1&type=sales-orders&page=1&scope=all'),
+      envV2,
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(eventCalls(fetchImpl)).toEqual([
+      `${INTERNAL_BASE}/documents/sales-order/so-missing/events?limit=50`,
+      `${INTERNAL_BASE}/documents/sales-order/so-null/events?limit=50`,
+    ]);
+    expect(body.results.map((item: { id: string; createdBy?: string }) => [item.id, item.createdBy])).toEqual([
+      ['so-listed', 'Ya en la lista'],
+      ['so-missing', 'Creador PV'],
+      ['so-null', 'Creador PV'],
+    ]);
+  });
+
+  it('asks for one events call for a single sales order without createdBy', async () => {
+    const fetchImpl = vi.fn(async (input: string) => {
+      if (input.includes('/events')) return internalJson({ items: [] });
+      if (input.includes('/purchase-orders') || input.includes('/waybills')) {
+        return internalJson({ items: [], pagination: { page: 1, pageSize: 100, hasMore: false }, readiness: 'ready' });
+      }
+      return internalJson({
+        items: [salesOrder('so-1')],
+        pagination: { page: 1, pageSize: 10, hasMore: false },
+        readiness: 'ready',
+      });
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await worker.fetch(
+      new Request('https://proxy.test/v2/documents/search?contactId=contact-1&type=sales-orders&page=1&scope=all'),
+      envV2,
+    );
+
+    expect(eventCalls(fetchImpl)).toHaveLength(1);
+  });
+
+  it('skips events for related purchase orders and waybills that bring createdBy', async () => {
+    const fetchImpl = vi.fn(async (input: string) => {
+      if (input.includes('/events')) return internalJson({ items: [] });
+      if (input.includes('/purchase-orders')) {
+        return internalJson({
+          items: [{ id: 'po-1', docNumber: 'PC-1', issueDate: '2026-08-18', sourceOrder: { id: 'so-1', docNumber: 'PV-so-1' }, createdBy: 'Compras' }],
+          pagination: { page: 1, pageSize: 100, hasMore: false },
+          readiness: 'ready',
+        });
+      }
+      if (input.includes('/waybills')) {
+        return internalJson({
+          items: [waybill('wb-1', { kind: 'material', sourceOrder: { id: 'so-1', docNumber: 'PV-so-1' }, createdBy: 'Almacén' })],
+          pagination: { page: 1, pageSize: 100, hasMore: false },
+          readiness: 'ready',
+        });
+      }
+      return internalJson({
+        items: [salesOrder('so-1', { createdBy: 'Ventas' })],
+        pagination: { page: 1, pageSize: 10, hasMore: false },
+        readiness: 'ready',
+      });
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const response = await worker.fetch(
+      new Request('https://proxy.test/v2/documents/search?contactId=contact-1&type=sales-orders&page=1&scope=all'),
+      envV2,
+    );
+
+    expect(response.status).toBe(200);
+    expect(eventCalls(fetchImpl)).toEqual([]);
+  });
+});

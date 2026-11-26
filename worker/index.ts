@@ -228,7 +228,8 @@ async function enrichDocumentCreationMetadata(
   documentType: 'sales-order' | 'purchase-order' | 'waybill' | 'estimate' | 'invoice',
 ): Promise<Array<Record<string, any>>> {
   return Promise.all(items.map(async (item) => {
-    if (!item.id || (typeof item.createdAt === 'string' && typeof item.createdBy === 'string')) {
+    // The UI only shows createdBy: a list that already brings it needs no events call.
+    if (!item.id || typeof item.createdBy === 'string') {
       return item;
     }
 
