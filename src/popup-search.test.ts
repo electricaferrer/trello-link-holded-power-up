@@ -603,6 +603,135 @@ describe('popup search behavior', () => {
   });
 });
 
+describe('search results render CRM data as text (AC-13)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  const HOSTILE_NAME = `Cliente <img src=x onerror="window.__xss = 1"> "Uno" 'Dos'`;
+
+  function expectNoInjectedMarkup(results: Element) {
+    expect(results.querySelectorAll('img, svg, script, iframe, b')).toHaveLength(0);
+    for (const element of results.querySelectorAll('*')) {
+      for (const attribute of element.getAttributeNames()) {
+        expect(attribute.startsWith('on'), `${element.tagName} ${attribute}`).toBe(false);
+      }
+    }
+  }
+
+  async function search(dom: JSDOM, query: string) {
+    const input = dom.window.document.getElementById('search') as HTMLInputElement;
+    input.value = query;
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await vi.waitFor(() => {
+      expect(dom.window.document.querySelector('.result-item')).not.toBeNull();
+    });
+  }
+
+  it('shows contact names, NIF and email with HTML and quotes as literal text and links the original contact', async () => {
+    const { dom, trello } = installPopupDom(`
+      <input id="search" />
+      <div id="results"></div>
+    `);
+    trello.card.mockResolvedValue({ id: 'card-1' });
+    const contact = {
+      id: `contact-"1"' <b>x</b>`,
+      name: HOSTILE_NAME,
+      code: `B1<img src=x onerror=alert(1)>"'`,
+      email: `a"b'<svg onload=alert(1)>@example.com`,
+      phone: `<script>window.__xss = 2</script>`,
+    };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ total: 1, results: [contact] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...contact, billAddress: { address: 'C/ Major 1', city: 'Palma' } })));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await import('./popups/search-contact');
+    await search(dom, 'Cliente');
+
+    const results = dom.window.document.getElementById('results')!;
+    expectNoInjectedMarkup(results);
+    expect(results.querySelectorAll('.result-item')).toHaveLength(1);
+    expect(results.querySelector('.result-name')!.textContent).toBe(HOSTILE_NAME);
+    expect(results.querySelector('.result-email')!.textContent).toBe(`${contact.code} · ${contact.email}`);
+    expect((dom.window as any).__xss).toBeUndefined();
+
+    (results.querySelector('.result-item') as HTMLElement).click();
+    await vi.waitFor(() => expect(trello.popup).toHaveBeenCalled());
+
+    // The selection uses the original contact: its exact id and name.
+    expect(fetchImpl.mock.calls[1][0]).toMatch(new RegExp(`/v2/contacts/${encodeURIComponent(contact.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+    const [, , , stored] = trello.set.mock.calls.find(([, , key]) => key === 'holdedPendingContact');
+    const pending = JSON.parse(dom.window.localStorage.getItem(stored.localStorageKey)!);
+    expect(pending).toMatchObject({ contactId: contact.id, contactName: HOSTILE_NAME });
+
+    dom.window.close();
+  });
+
+  it('shows project names, client and code with HTML and quotes as literal text and links the original project', async () => {
+    const { dom, trello } = installPopupDom(`
+      <input id="search" />
+      <div id="results"></div>
+    `);
+    trello.get.mockResolvedValue({});
+    trello.card.mockResolvedValue({ id: 'card-1', desc: '' });
+    const project = {
+      id: `project-"1"' <b>x</b>`,
+      name: `Obra <img src=x onerror="window.__xss = 1"> "Norte" 'Sur'`,
+      contactName: `Cliente <svg onload=alert(1)>"'`,
+      key: `<b>AUT3</b>"`,
+    };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ total: 1, results: [project] })))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await import('./popups/search-project');
+    await search(dom, 'Obra');
+
+    const results = dom.window.document.getElementById('results')!;
+    expectNoInjectedMarkup(results);
+    expect(results.querySelectorAll('.result-item')).toHaveLength(1);
+    expect(results.querySelector('.result-name')!.textContent).toBe(project.name);
+    expect(results.querySelector('.result-status')!.textContent).toBe(`${project.contactName} · ${project.key}`);
+    expect((dom.window as any).__xss).toBeUndefined();
+
+    (results.querySelector('.result-item') as HTMLElement).click();
+    await vi.waitFor(() => expect(trello.closePopup).toHaveBeenCalled());
+
+    // The selection uses the original project: its exact id and name.
+    expect(trello.set).toHaveBeenCalledWith('card', 'shared', 'holdedData', expect.objectContaining({
+      projectId: project.id,
+      projectName: project.name,
+    }));
+
+    dom.window.close();
+  });
+
+  it('shows a search error message as text', async () => {
+    const { dom } = installPopupDom(`
+      <input id="search" />
+      <div id="results"></div>
+    `);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: '<img src=x onerror=alert(1)>',
+    }), { status: 502 })));
+
+    await import('./popups/search-project');
+    const input = dom.window.document.getElementById('search') as HTMLInputElement;
+    input.value = 'Obra';
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await vi.waitFor(() => expect(dom.window.document.querySelector('.error')).not.toBeNull());
+
+    expectNoInjectedMarkup(dom.window.document.getElementById('results')!);
+    expect(dom.window.document.querySelector('.error')!.textContent).toBe('Error: <img src=x onerror=alert(1)>');
+
+    dom.window.close();
+  });
+});
+
 describe('address selection behavior', () => {
   afterEach(() => {
     vi.unstubAllGlobals();

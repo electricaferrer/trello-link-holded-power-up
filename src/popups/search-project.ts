@@ -25,22 +25,14 @@ function renderResults(projects: HoldedProject[], query: string) {
     });
     return;
   }
-  resultsDiv.innerHTML = projects
-    .map(
-      (p) => {
-        const initials = p.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-        const subtitle = [p.contactName, p.key].filter(Boolean).join(' · ');
-        return `
-    <div class="result-item" data-id="${p.id}" data-name="${p.name}">
-      <div class="result-avatar">${initials}</div>
-      <div class="result-info">
-        <div class="result-name">${p.name}</div>
-        ${subtitle ? `<div class="result-status">${subtitle}</div>` : ''}
-      </div>
-    </div>`;
-      }
-    )
-    .join('');
+  // CRM values go in as text (textContent, dataset), never as HTML.
+  resultsDiv.replaceChildren(...projects.map((project) => {
+    const item = createResultItem(project.name, [project.contactName, project.key].filter(Boolean).join(' · '));
+    item.dataset.id = project.id;
+    item.dataset.name = project.name;
+    item.addEventListener('click', () => selectProject(project));
+    return item;
+  }));
 
   if (projects.length <= 3) {
     resultsDiv.insertAdjacentHTML('beforeend',
@@ -49,23 +41,48 @@ function renderResults(projects: HoldedProject[], query: string) {
       window.open('https://app.holded.com/projects/view', '_blank');
     });
   }
+}
 
-  resultsDiv.querySelectorAll('.result-item').forEach((el) => {
-    el.addEventListener('click', async () => {
-      const id = (el as HTMLElement).dataset.id!;
-      const name = (el as HTMLElement).dataset.name!;
-      const data = await getCardData(t);
-      data.projectId = id;
-      data.projectName = name;
-      await setCardData(t, data);
-      try {
-        const card = await t.card('id', 'desc');
-        const newDesc = syncDescriptionSection(card.desc || '', data);
-        await updateCardDescription(t, newDesc);
-      } catch (err) { console.error('Holded: error syncing description', err); }
-      t.closePopup();
-    });
-  });
+function createResultItem(name: string, subtitle: string): HTMLDivElement {
+  const item = document.createElement('div');
+  item.className = 'result-item';
+  const avatar = document.createElement('div');
+  avatar.className = 'result-avatar';
+  avatar.textContent = name.split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+  const info = document.createElement('div');
+  info.className = 'result-info';
+  const nameEl = document.createElement('div');
+  nameEl.className = 'result-name';
+  nameEl.textContent = name;
+  info.append(nameEl);
+  if (subtitle) {
+    const subtitleEl = document.createElement('div');
+    subtitleEl.className = 'result-status';
+    subtitleEl.textContent = subtitle;
+    info.append(subtitleEl);
+  }
+  item.append(avatar, info);
+  return item;
+}
+
+async function selectProject(project: HoldedProject) {
+  const data = await getCardData(t);
+  data.projectId = project.id;
+  data.projectName = project.name;
+  await setCardData(t, data);
+  try {
+    const card = await t.card('id', 'desc');
+    const newDesc = syncDescriptionSection(card.desc || '', data);
+    await updateCardDescription(t, newDesc);
+  } catch (err) { console.error('Holded: error syncing description', err); }
+  t.closePopup();
+}
+
+function showSearchError(err: unknown) {
+  const error = document.createElement('div');
+  error.className = 'error';
+  error.textContent = `Error: ${(err as Error).message}`;
+  resultsDiv.replaceChildren(error);
 }
 
 async function doSearch() {
@@ -80,7 +97,7 @@ async function doSearch() {
     const { results } = await searchProjects(t, query);
     renderResults(results, query);
   } catch (err) {
-    resultsDiv.innerHTML = `<div class="error">Error: ${(err as Error).message}</div>`;
+    showSearchError(err);
   }
 }
 
