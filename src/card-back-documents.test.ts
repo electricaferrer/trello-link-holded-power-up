@@ -2369,6 +2369,22 @@ describe('card-back document view (internal API v2)', () => {
       expect(runLongTimers()).toHaveLength(1);
     });
 
+    it('drops an expiring list of a closed preview and loads it fresh when it opens again', async () => {
+      const { dom, clock, listRequests, fileLink, runLongTimers } = await openCardWithAttachments();
+      const toggle = dom.window.document.querySelector('.document-preview-toggle');
+      toggle.click();
+      clock.ms += (TTL_S - 60) * 1000;
+      runLongTimers();
+      await waitForRender();
+      // Nobody sees it: no request until the preview opens again.
+      expect(listRequests()).toHaveLength(1);
+
+      toggle.click();
+      await waitForRender();
+      expect(listRequests()).toHaveLength(2);
+      expect(fileLink().getAttribute('href')).toContain('sig=sig-2');
+    });
+
     it('reloads an expired list when the preview is closed and opened again', async () => {
       const { dom, clock, listRequests, fileLink } = await openCardWithAttachments();
       const toggle = dom.window.document.querySelector('.document-preview-toggle');
