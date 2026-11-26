@@ -1714,9 +1714,13 @@
           var pending = view.previewAttachmentRequests[previewId];
           if (pending.controller) pending.controller.abort();
         });
+        Object.keys(view.previewAttachmentTimers).forEach(function(previewId) {
+          clearTimeout(view.previewAttachmentTimers[previewId]);
+        });
         view.previewAttachments = {};
         view.previewAttachmentRequests = {};
         view.previewAttachmentVisibleCounts = {};
+        view.previewAttachmentTimers = {};
       });
       documentRequestGeneration += 1;
       documentResults = {};
@@ -1739,9 +1743,10 @@
           pages: {},   // stateKey -> current page number
           cursors: {}, // stateKey -> { pageNumber: cursorToFetchThatPage } (estimates)
           previewStates: {}, // preview ID -> user-selected expanded state
-          previewAttachments: {}, // preview ID -> { path, items }
+          previewAttachments: {}, // preview ID -> { path, items, expiresAt }
           previewAttachmentRequests: {}, // preview ID -> { path, promise }
           previewAttachmentVisibleCounts: {}, // preview ID -> visible image count
+          previewAttachmentTimers: {}, // preview ID -> renewal timer of its signed URLs
           pendingTabFocus: null,
         };
       }
@@ -2276,6 +2281,100 @@
         });
     }
 
+    // The attachment list signs its binary URLs for 15 minutes (exp, sig). A list is
+    // renewed, with a new JWT, from 60 s before its earliest exp: on its own while the
+    // card stays open, and before opening a URL, showing more images or reopening it.
+    var ATTACHMENT_URL_RENEW_MARGIN_MS = 60000;
+
+    function getAttachmentListExpiresAt(items) {
+      var earliest = null;
+      (items || []).forEach(function(item) {
+        [item && item.url, item && item.thumbnailUrl].forEach(function(value) {
+          if (!value) return;
+          try {
+            var exp = Number(new URL(String(value), HOLDED_PROXY_URL).searchParams.get('exp'));
+            if (exp > 0 && (earliest === null || exp * 1000 < earliest)) earliest = exp * 1000;
+          } catch (_) {}
+        });
+      });
+      return earliest;
+    }
+
+    function isAttachmentListStale(entry) {
+      return Boolean(entry && entry.expiresAt &&
+        Date.now() >= entry.expiresAt - ATTACHMENT_URL_RENEW_MARGIN_MS);
+    }
+
+    function getAttachmentUrlPath(url) {
+      return String(url || '').split(/[?#]/)[0];
+    }
+
+    function forgetDocumentAttachments(view, previewId) {
+      clearTimeout(view.previewAttachmentTimers[previewId]);
+      delete view.previewAttachmentTimers[previewId];
+      delete view.previewAttachments[previewId];
+    }
+
+    function scheduleDocumentAttachmentRenewal(view, previewId) {
+      var entry = view.previewAttachments[previewId];
+      clearTimeout(view.previewAttachmentTimers[previewId]);
+      delete view.previewAttachmentTimers[previewId];
+      if (!entry || !entry.expiresAt) return;
+      view.previewAttachmentTimers[previewId] = setTimeout(function() {
+        delete view.previewAttachmentTimers[previewId];
+        if (view.previewAttachments[previewId] !== entry) return;
+        renewDocumentAttachments(view, previewId).catch(function() {});
+      }, Math.max(0, entry.expiresAt - ATTACHMENT_URL_RENEW_MARGIN_MS - Date.now()));
+    }
+
+    // Drops the cached list and loads it again. Resolves with the new items, or null
+    // when the preview is closed: it then loads when it is opened again.
+    function renewDocumentAttachments(view, previewId) {
+      var entry = view.previewAttachments[previewId];
+      var path = entry && entry.path;
+      forgetDocumentAttachments(view, previewId);
+      var preview = document.getElementById(previewId);
+      var slot = preview && preview.querySelector('.document-preview-attachments-slot');
+      if (!path || path === 'inline' || !slot) return Promise.resolve(null);
+      slot.setAttribute('data-state', 'idle');
+      if (preview.hasAttribute('hidden')) {
+        slot.innerHTML = '';
+        return Promise.resolve(null);
+      }
+      preview.setAttribute('data-static-motion', 'true');
+      loadDocumentAttachments(preview, path, view, previewId);
+      var pending = view.previewAttachmentRequests[previewId];
+      return pending ? pending.promise : Promise.resolve(null);
+    }
+
+    // Opening an expired URL would get a 403: open the tab within the click, so the
+    // browser allows it, and send it to the renewed URL of the same attachment.
+    function openRenewedAttachment(event, link, view) {
+      var preview = link.closest('.document-preview');
+      var entry = preview && view.previewAttachments[preview.id];
+      if (!isAttachmentListStale(entry)) return;
+      event.preventDefault();
+      var linkPath = getAttachmentUrlPath(link.getAttribute('href'));
+      var opened = window.open('', '_blank');
+      if (opened) {
+        try { opened.opener = null; } catch (_) {}
+      }
+      renewDocumentAttachments(view, preview.id).then(function(items) {
+        var renewed = getPreviewAttachments({ attachments: items || [] }).filter(function(attachment) {
+          return getAttachmentUrlPath(attachment.url) === linkPath;
+        })[0];
+        if (!renewed) {
+          if (opened) opened.close();
+        } else if (opened) {
+          opened.location.href = renewed.url;
+        } else {
+          window.open(renewed.url, '_blank', 'noopener');
+        }
+      }).catch(function() {
+        if (opened) opened.close();
+      });
+    }
+
     function renderDocumentAttachmentItems(slot, attachments, view, previewId) {
       slot.setAttribute('data-state', 'loaded');
       var normalized = getPreviewAttachments({ attachments: attachments });
@@ -2294,6 +2393,16 @@
       container.setAttribute('data-load-more-bound', 'true');
       container.addEventListener('click', function(event) {
         var target = event.target;
+        var attachmentLink = target && target.closest
+          ? target.closest('.document-preview-attachments-slot a[href]')
+          : null;
+        if (attachmentLink && container.contains(attachmentLink)) {
+          openRenewedAttachment(event, attachmentLink, getDocumentsView({
+            contactId: container.getAttribute('data-contact-id') || '',
+            projectId: container.getAttribute('data-project-id') || '',
+          }));
+          return;
+        }
         var button = target && target.closest
           ? target.closest('.document-preview-load-more')
           : null;
@@ -2313,6 +2422,10 @@
         var visibleCount = (view.previewAttachmentVisibleCounts[previewId] || ATTACHMENT_BATCH_SIZE) +
           ATTACHMENT_BATCH_SIZE;
         view.previewAttachmentVisibleCounts[previewId] = visibleCount;
+        if (cached.path !== 'inline' && isAttachmentListStale(cached)) {
+          renewDocumentAttachments(view, previewId).catch(function() {});
+          return;
+        }
         var slot = preview.querySelector('.document-preview-attachments-slot');
         if (slot) {
           renderDocumentAttachmentItems(slot, cached.items, view, previewId);
@@ -2349,10 +2462,16 @@
 
     function loadDocumentAttachments(preview, path, view, previewId) {
       var slot = preview.querySelector('.document-preview-attachments-slot');
-      if (!slot || slot.getAttribute('data-state') === 'loading' ||
+      if (!slot) return;
+      var cached = view.previewAttachments[previewId];
+      if (cached && cached.path === path && isAttachmentListStale(cached)) {
+        forgetDocumentAttachments(view, previewId);
+        cached = null;
+        if (slot.getAttribute('data-state') === 'loaded') slot.setAttribute('data-state', 'idle');
+      }
+      if (slot.getAttribute('data-state') === 'loading' ||
         slot.getAttribute('data-state') === 'loaded') return;
 
-      var cached = view.previewAttachments[previewId];
       if (cached && cached.path === path) {
         preview.setAttribute('data-static-motion', 'true');
         renderDocumentAttachmentItems(slot, cached.items, view, previewId);
@@ -2383,7 +2502,12 @@
         .then(function(attachments) {
           if (view.previewAttachmentRequests[previewId] === pending) {
             delete view.previewAttachmentRequests[previewId];
-            view.previewAttachments[previewId] = { path: path, items: attachments };
+            view.previewAttachments[previewId] = {
+              path: path,
+              items: attachments,
+              expiresAt: getAttachmentListExpiresAt(attachments),
+            };
+            scheduleDocumentAttachmentRenewal(view, previewId);
           }
           var resolved = view.previewAttachments[previewId];
           if (resolved && resolved.path === path) {

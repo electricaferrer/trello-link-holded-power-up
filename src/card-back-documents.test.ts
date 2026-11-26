@@ -72,6 +72,10 @@ function loadCardBack(documents, options = {}) {
   let renderCallback;
   let nextScheduledRefreshId = 1;
   const scheduledRefreshes = new Map();
+  // Timers of a minute or more (signed attachment URL renewals) run only when the test says.
+  const longTimers = new Map();
+  const openCalls = [];
+  let attachmentListCalls = 0;
   let restApiAuthorized = options.authorized !== false;
   let cardData = {
     contactId: options.contactId === null ? undefined : 'contact-1',
@@ -87,6 +91,12 @@ function loadCardBack(documents, options = {}) {
     runScripts: 'dangerously',
     pretendToBeVisual: true,
     beforeParse(window) {
+      if (options.clock) window.Date.now = () => options.clock.ms;
+      window.open = (...args) => {
+        const opened = { opener: window, location: { href: '' }, closed: false, close() { this.closed = true; } };
+        openCalls.push({ args, opened });
+        return opened;
+      };
       const nativeSetTimeout = window.setTimeout.bind(window);
       const nativeClearTimeout = window.clearTimeout.bind(window);
       window.setTimeout = (callback, delay, ...args) => {
@@ -95,10 +105,15 @@ function loadCardBack(documents, options = {}) {
           scheduledRefreshes.set(id, () => callback(...args));
           return id;
         }
+        if (delay >= 60_000) {
+          const id = nextScheduledRefreshId++;
+          longTimers.set(id, { delay, run: () => callback(...args) });
+          return id;
+        }
         return nativeSetTimeout(callback, delay, ...args);
       };
       window.clearTimeout = (id) => {
-        if (!scheduledRefreshes.delete(id)) nativeClearTimeout(id);
+        if (!scheduledRefreshes.delete(id) && !longTimers.delete(id)) nativeClearTimeout(id);
       };
       window.confirm = () => options.confirmUnlink === true;
       window.fetch = async (url, init) => {
@@ -134,8 +149,11 @@ function loadCardBack(documents, options = {}) {
           if (options.attachmentDelayMs) {
             await new Promise((r) => setTimeout(r, options.attachmentDelayMs));
           }
+          attachmentListCalls += 1;
           return new Response(JSON.stringify({
-            items: options.attachments || [],
+            items: typeof options.attachments === 'function'
+              ? options.attachments(attachmentListCalls)
+              : options.attachments || [],
             hasMore: false,
             nextCursor: null,
           }), {
@@ -201,6 +219,14 @@ function loadCardBack(documents, options = {}) {
     pluginData,
     authState,
     rerender: () => renderCallback?.(),
+    openCalls,
+    longTimers,
+    runLongTimers: () => {
+      const due = [...longTimers.entries()];
+      longTimers.clear();
+      for (const [, timer] of due) timer.run();
+      return due.map(([, timer]) => timer.delay);
+    },
     runScheduledDocumentRefresh: () => {
       const next = scheduledRefreshes.entries().next().value;
       if (!next) return false;
@@ -2235,6 +2261,139 @@ describe('card-back document view (internal API v2)', () => {
     await waitForRender();
     expect(authState.jwtCalls).toBe(2);
     expect(sent).toHaveLength(2);
+  });
+
+  describe('signed attachment URLs in a card that stays open', () => {
+    const PROXY = 'https://holded-proxy.electricaferrer.workers.dev';
+    const ATTACHMENTS_PATH = '/v2/documents/waybills/wb-1/attachments';
+    const TTL_S = 900;
+
+    // Each list response signs its URLs for 15 minutes from the card's clock, like the Worker.
+    function signedAttachments(clock, { images = 0 } = {}) {
+      return (call) => {
+        const exp = Math.floor(clock.ms / 1000) + TTL_S;
+        const signed = (id) => `${ATTACHMENTS_PATH}/${encodeURIComponent(id)}?name=${encodeURIComponent(id)}&exp=${exp}&sig=sig-${call}`;
+        return [
+          { id: 'plano.pdf', name: 'plano.pdf', mimeType: 'application/pdf', url: signed('plano.pdf') },
+          ...Array.from({ length: images }, (_, index) => ({
+            id: `foto-${index + 1}.jpg`,
+            name: `foto-${index + 1}.jpg`,
+            mimeType: 'image/jpeg',
+            url: signed(`foto-${index + 1}.jpg`),
+          })),
+        ];
+      };
+    }
+
+    async function openCardWithAttachments(options = {}) {
+      const clock = { ms: Date.now() };
+      const card = loadCardBack({
+        salesOrders: [],
+        invoices: [],
+        estimates: [],
+        waybills: [{
+          id: 'wb-1', type: 'waybills', documentNumber: 'ALB-1', kind: 'labour', workflowStatus: 'prepared',
+          issueDate: '2026-07-15', notes: 'Nota', attachmentsUrl: ATTACHMENTS_PATH, projects: [],
+        }],
+      }, { clock, attachments: signedAttachments(clock, options) });
+      await waitForRender();
+      expand(card.dom);
+      await waitForRender();
+      const listRequests = () => card.requests.filter(({ url }) => url.startsWith(`${PROXY}${ATTACHMENTS_PATH}`));
+      const fileLink = () => card.dom.window.document.querySelector('.document-preview-file');
+      return { ...card, clock, listRequests, fileLink };
+    }
+
+    function click(dom, element) {
+      const event = new dom.window.MouseEvent('click', { bubbles: true, cancelable: true });
+      element.dispatchEvent(event);
+      return event;
+    }
+
+    it('opens a still-valid attachment URL directly, without renewing the list', async () => {
+      const { dom, clock, listRequests, fileLink, openCalls } = await openCardWithAttachments();
+      expect(listRequests()).toHaveLength(1);
+      expect(fileLink().getAttribute('href')).toContain('sig=sig-1');
+
+      clock.ms += (TTL_S - 120) * 1000;
+      const event = click(dom, fileLink());
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(openCalls).toHaveLength(0);
+      expect(listRequests()).toHaveLength(1);
+    });
+
+    it('renews the list with a JWT before opening an attachment whose URL has expired', async () => {
+      const { dom, clock, listRequests, fileLink, openCalls } = await openCardWithAttachments();
+      clock.ms += (TTL_S + 1) * 1000;
+
+      const event = click(dom, fileLink());
+      expect(event.defaultPrevented).toBe(true);
+      // The tab opens within the click, so the browser allows it; the fresh URL follows.
+      expect(openCalls).toHaveLength(1);
+      await waitForRender();
+
+      expect(listRequests()).toHaveLength(2);
+      expect(listRequests()[1].init.headers.Authorization).toMatch(/^Bearer /);
+      expect(openCalls[0].opened.opener).toBeNull();
+      expect(openCalls[0].opened.location.href).toBe(`${PROXY}${ATTACHMENTS_PATH}/plano.pdf?name=plano.pdf&exp=${Math.floor(clock.ms / 1000) + TTL_S}&sig=sig-2`);
+      expect(fileLink().getAttribute('href')).toContain('sig=sig-2');
+      expect(dom.window.document.querySelector('.document-preview-attachments-slot').getAttribute('data-state')).toBe('loaded');
+    });
+
+    it('treats a URL within 60 s of its exp as expired', async () => {
+      const { dom, clock, listRequests, fileLink } = await openCardWithAttachments();
+      clock.ms += (TTL_S - 60) * 1000;
+
+      expect(click(dom, fileLink()).defaultPrevented).toBe(true);
+      await waitForRender();
+      expect(listRequests()).toHaveLength(2);
+    });
+
+    it('renews the list on its own when the URLs are about to expire while the preview stays open', async () => {
+      const { dom, clock, listRequests, fileLink, runLongTimers } = await openCardWithAttachments({ images: 2 });
+      expect(dom.window.document.querySelector('.document-preview-image')?.getAttribute('src')).toContain('sig=sig-1');
+
+      clock.ms += (TTL_S - 60) * 1000;
+      // Scheduled 60 s before the earliest exp (whole seconds, so up to 1 s sooner).
+      const delays = runLongTimers();
+      expect(delays).toHaveLength(1);
+      expect(delays[0]).toBeGreaterThan((TTL_S - 61) * 1000);
+      expect(delays[0]).toBeLessThanOrEqual((TTL_S - 60) * 1000);
+      await waitForRender();
+
+      expect(listRequests()).toHaveLength(2);
+      expect(fileLink().getAttribute('href')).toContain('sig=sig-2');
+      expect(dom.window.document.querySelector('.document-preview-image')?.getAttribute('src')).toContain('sig=sig-2');
+      // The renewed list schedules the next renewal.
+      expect(runLongTimers()).toHaveLength(1);
+    });
+
+    it('reloads an expired list when the preview is closed and opened again', async () => {
+      const { dom, clock, listRequests, fileLink } = await openCardWithAttachments();
+      const toggle = dom.window.document.querySelector('.document-preview-toggle');
+      toggle.click();
+      clock.ms += (TTL_S + 1) * 1000;
+      toggle.click();
+      await waitForRender();
+
+      expect(listRequests()).toHaveLength(2);
+      expect(fileLink().getAttribute('href')).toContain('sig=sig-2');
+    });
+
+    it('renews an expired list before showing more images', async () => {
+      const { dom, clock, listRequests } = await openCardWithAttachments({ images: 7 });
+      expect(dom.window.document.querySelectorAll('.document-preview-image-link')).toHaveLength(5);
+
+      clock.ms += (TTL_S + 1) * 1000;
+      click(dom, dom.window.document.querySelector('.document-preview-load-more'));
+      await waitForRender();
+
+      expect(listRequests()).toHaveLength(2);
+      const images = [...dom.window.document.querySelectorAll('.document-preview-image-link')];
+      expect(images).toHaveLength(7);
+      for (const image of images) expect(image.getAttribute('href')).toContain('sig=sig-2');
+    });
   });
 
   it('answers every explicit JWT request from the embedded form, even when Trello returns the same JWT', async () => {
