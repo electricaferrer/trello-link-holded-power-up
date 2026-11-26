@@ -7,8 +7,6 @@ export const TRELLO_JWT_KEYS_URL = 'https://api.trello.com/1/resource/jwt-public
 const KEY_CACHE_TTL_S = 60 * 60;
 /** After a signature failure, keys older than this are downloaded again once. */
 const KEY_REFRESH_AFTER_S = 5 * 60;
-/** Tolerated clock difference when checking `exp`. */
-const EXP_LEEWAY_S = 60;
 
 const RS256 = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' } as const;
 const HMAC_SHA256 = { name: 'HMAC', hash: 'SHA-256' } as const;
@@ -145,7 +143,8 @@ export async function verifyTrelloJwt(
   if (!payload) return null;
   if (payload.iss !== 'trello') return null;
   if (typeof payload.iat !== 'number' || typeof payload.exp !== 'number') return null;
-  if (payload.exp + EXP_LEEWAY_S <= now) return null;
+  // No clock tolerance: an expired JWT gets a 401 (the frontend renews 60 s before exp).
+  if (payload.exp <= now) return null;
   if (!env.TRELLO_POWERUP_ID || payload.idPlugin !== env.TRELLO_POWERUP_ID) return null;
 
   const signature = base64urlToBytes(encodedSignature);

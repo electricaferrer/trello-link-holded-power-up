@@ -65,13 +65,15 @@ describe('verifyTrelloJwt', () => {
     expect(await verifyTrelloJwt(token, env, NOW, keysFetch(trello.publicKeyPem))).toBeNull();
   });
 
-  it('rejects an expired token beyond the 60 s clock margin', async () => {
+  it('rejects a token once its exp is reached, without clock tolerance', async () => {
     const fetchImpl = keysFetch(trello.publicKeyPem);
-    const expired = await trello.sign(trelloClaims(NOW, { iat: NOW - 1000, exp: NOW - 61 }));
-    const withinMargin = await trello.sign(trelloClaims(NOW, { iat: NOW - 1000, exp: NOW - 30 }));
+    const signedWithExp = (exp: number) => trello.sign(trelloClaims(NOW, { iat: NOW - 1000, exp }));
 
-    expect(await verifyTrelloJwt(expired, env, NOW, fetchImpl)).toBeNull();
-    expect(await verifyTrelloJwt(withinMargin, env, NOW, fetchImpl)).not.toBeNull();
+    expect(await verifyTrelloJwt(await signedWithExp(NOW - 61), env, NOW, fetchImpl)).toBeNull();
+    expect(await verifyTrelloJwt(await signedWithExp(NOW - 30), env, NOW, fetchImpl)).toBeNull();
+    expect(await verifyTrelloJwt(await signedWithExp(NOW - 1), env, NOW, fetchImpl)).toBeNull();
+    expect(await verifyTrelloJwt(await signedWithExp(NOW), env, NOW, fetchImpl)).toBeNull();
+    expect(await verifyTrelloJwt(await signedWithExp(NOW + 1), env, NOW, fetchImpl)).not.toBeNull();
   });
 
   it('rejects a token without a numeric exp or iat', async () => {
